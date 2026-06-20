@@ -30,25 +30,43 @@ More detailed description of the code's functionality can be found in the Suppor
 
 ### Submission Note
 
-The ZIP archive contains the complete pre-installed software package required to run the code. No additional setup is needed.
+The ZIP archive contains the complete pre-installed software package required to run the code. 
 
-To run the code package from the command line:
+Run the following commands from the root directory:
+
+(Windows)
 ```
+cd Hydromatic_Simulator-main
+
 # Set up a virtual environment (recommended)
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+venv\Scripts\activate
 
-pip install -r requirements.txt # Ensure you are in the root directory
+pip install -r requirements.txt
+python main.py
+Hydromatic_Simulator
+```
+
+(Mac)
+```
+cd Hydromatic_Simulator-main
+
+python3 -m venv venv
+source venv/bin/activate
+
+pip install -r requirements.txt
+
+python3 main.py
 Hydromatic_Simulator
 ```
 
 ## Installation
 Not required for the pre-installed version.
 
-1. Clone the repository:
+1. Clone the repository and locate to the folder:
 ```
 git clone https://github.com/bae-research-group/Hydromatic_Simulator.git
-cd Hydromatic_Simulator # root directory
+cd Hydromatic_Simulator
 ```
 2. Set up a virtual environment (Recommended):
 ```
