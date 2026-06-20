@@ -12,7 +12,7 @@ import tensorflow as tf
 from Hydromatic_Simulator.utils.config import config
 
 
-def save_sequence_plot(pred_sequence, output_dir="./Hydromatic_Simulator/outputs"):
+def save_sequence_plot(pred_sequence, output_dir=os.path.join(".", "Hydromatic_Simulator", "outputs")):
     os.makedirs(output_dir, exist_ok=True)
     pred_sequence = np.squeeze(pred_sequence)
     
