@@ -19,3 +19,9 @@ if sys.platform == "darwin":
         if _mac_app_icon:
             app = NSApplication.sharedApplication()
             app.setApplicationIconImage_(_mac_app_icon)
+else:
+    def set_dock_icon(image_path: str):
+        pass
+
+    def refresh_dock_icon(event=None):
+        pass
