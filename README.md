@@ -14,8 +14,8 @@ More detailed description of the code's functionality can be found in the Suppor
 ## 1. System Requirements
 ### Software dependencies and operating systems
 - Operating Systems: Windows 10/11, macOS (12.0+).
-- Programming Language: Python 3.9, 3.10, or 3.11
-- **Git**, **Git LFS (Large File Storage))**
+- Programming Language: Python 3.9, 3.10, or 3.11v (https://www.python.org/downloads/)
+- Requires: **Git**, **Git LFS (Large File Storage))**
 - Dependencies:
     - Pillow ≥ 10.0.0
     - Matplotlib ≥ 3.8.0
@@ -26,10 +26,22 @@ More detailed description of the code's functionality can be found in the Suppor
     - scikit-learn ≥ 1.4.0
 
 ## 2. Installation Guide
+This project uses Git Large File Storage (LFS) for images and binary assets. We do not recommend installation from ZIP download. 
+- Expects 3-5 minute installation time.
+- Installation of Git/Git LFS:
 
-- Estimated software install time: 3-5 minutes on a normal desktop computer.
+  (Windows)
+  ```
+  winget install --id Git.Git -e --source winget
+  winget install GitHub.GitLFS
+  ```
+  (Mac)
+  ```
+  brew install git
+  brew install git-lfs
+  ```
 
-## Installation (Mac)
+## Installation (Windows)
 
 1. Clone the repository and locate to the folder:
 ```
@@ -38,8 +50,8 @@ cd Hydromatic_Simulator
 ```
 2. Set up a virtual environment (Recommended):
 ```
-python3 -m venv venv
-source venv/bin/activate
+python -m venv venv
+venv\Scripts\activate
 ```
 3. Install the dependencies:
 ```
@@ -60,7 +72,7 @@ pip install .
 Hydromatic_Simulator
 ```
 
-## Installation (Windows)
+## Installation (Mac)
 
 1. Clone the repository and locate to the folder:
 ```
@@ -69,8 +81,8 @@ cd Hydromatic_Simulator
 ```
 2. Set up a virtual environment (Recommended):
 ```
-python -m venv venv
-venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate
 ```
 3. Install the dependencies:
 ```
