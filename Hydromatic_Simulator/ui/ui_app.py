@@ -338,6 +338,18 @@ class BinaryPredictorApp:
         self.root.title("Hydromatic Simulator")
         self.root.geometry("600x700")
 
+        if sys.platform == "win32":
+            import ctypes
+            
+            myappid = 'bae_research.hydromatic_simulator.gui.1.0' 
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            
+            try:
+                icon_path = os.path.join(".", "Hydromatic_Simulator", "icon.ico")
+                self.root.iconbitmap(icon_path)
+            except tk.TclError:
+                print(f"Notice: app icon is only loadable in Mac environment.")
+
         self.loading_label = tk.Label(root, text="", fg="blue")
         self.loading_label.pack()
         
@@ -399,7 +411,7 @@ class BinaryPredictorApp:
         self.stop_btn.config(state="disabled")
         
     def show_loading_image(self):
-        img_path = './Hydromatic_Simulator/load_img.tif'
+        img_path = os.path.join(".", "Hydromatic_Simulator", "load_img.tif")
         img = Image.open(img_path)
         img.thumbnail((540, 540))
         self.load_photo = ImageTk.PhotoImage(img)
@@ -447,11 +459,11 @@ class BinaryPredictorApp:
         self.stop_animation()
         
         self.predict_btn.config(state="disabled")
-        self.start_btn.config(state="enabled")
+        self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.editor_btn.config(state="disabled")
         self.entry.config(state="disabled")
-
+ 
         if sys.platform == "darwin":
             self.root.bind("<FocusIn>", mac_icon.refresh_dock_icon)
         
@@ -493,6 +505,7 @@ class BinaryPredictorApp:
     def animate(self):
         if not self.animation_running:
             return
+            
         if sys.platform == "darwin":
             self.root.bind("<FocusIn>", mac_icon.refresh_dock_icon)
             
