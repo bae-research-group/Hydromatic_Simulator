@@ -15,6 +15,7 @@ More detailed description of the code's functionality can be found in the Suppor
 ### Software dependencies and operating systems
 - Operating Systems: Windows 10/11, macOS (12.0+).
 - Programming Language: Python 3.9, 3.10, or 3.11
+- **Git**, **Git LFS (Large File Storage))**
 - Dependencies:
     - Pillow ≥ 10.0.0
     - Matplotlib ≥ 3.8.0
