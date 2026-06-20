@@ -28,40 +28,38 @@ More detailed description of the code's functionality can be found in the Suppor
 
 - Estimated software install time: 3-5 minutes on a normal desktop computer.
 
-### Submission Note
+## Installation (Mac)
 
-The ZIP archive contains the complete pre-installed software package required to run the code. 
-
-Run the following commands from the root directory:
-
-(Windows)
+1. Clone the repository and locate to the folder:
 ```
-cd Hydromatic_Simulator-main
-
-# Set up a virtual environment (recommended)
-python -m venv venv
-venv\Scripts\activate
-
-pip install -r requirements.txt
-python main.py
-Hydromatic_Simulator
+git clone https://github.com/bae-research-group/Hydromatic_Simulator.git
+cd Hydromatic_Simulator
 ```
-
-(Mac)
+2. Set up a virtual environment (Recommended):
 ```
-cd Hydromatic_Simulator-main
-
 python3 -m venv venv
 source venv/bin/activate
-
+```
+3. Install the dependencies:
+```
 pip install -r requirements.txt
-
-python3 main.py
+```
+4. Set up Git LFS (to download the large (PNG) files):
+```
+git lfs install
+git lfs pull
+```
+5. Run from source:
+```
+python main.py
+```
+or install as a CLI app:
+```
+pip install .
 Hydromatic_Simulator
 ```
 
-## Installation
-Not required for the pre-installed version.
+## Installation (Windows)
 
 1. Clone the repository and locate to the folder:
 ```
@@ -71,7 +69,7 @@ cd Hydromatic_Simulator
 2. Set up a virtual environment (Recommended):
 ```
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+venv\Scripts\activate
 ```
 3. Install the dependencies:
 ```
