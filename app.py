@@ -68,31 +68,41 @@ if "prediction_code" not in st.session_state:
 def load_models():
     models = []
 
-    dummy_design = tf.zeros((1, S))
-    dummy_position = tf.zeros((1, NUM_COORD, 2))
+    weights_path = os.path.join(
+        "Hydromatic_Simulator",
+        "model",
+        "weights",
+    )
+
+    # Dummy inputs for model initialization
+    dummy_design = tf.zeros((1, S), dtype=tf.float32)
+    dummy_position = tf.zeros((1, 1, 2), dtype=tf.float32)
+
+    dummy_encoder_input = tf.zeros((1, S), dtype=tf.float32)
 
     for i in range(NUM_COORD):
+
         model = GeneratorModel()
 
-        # Build the model
+        # Initialize model variables
         _ = model.recursive_generate(
             dummy_design,
-            dummy_position[:, 0, :],
+            dummy_position,
             training=False,
         )
 
-        encoder_path = (
-            f"./Hydromatic_Simulator/model/weights/"
-            f"encoder_{NUM_COORD}coords_{i}.weights.h5"
+        encoder_file = os.path.join(
+            weights_path,
+            f"encoder_{NUM_COORD}coords_{i}.weights.h5",
         )
 
-        decoder_path = (
-            f"./Hydromatic_Simulator/model/weights/"
-            f"decoder_{NUM_COORD}coords_{i}.weights.h5"
+        decoder_file = os.path.join(
+            weights_path,
+            f"decoder_{NUM_COORD}coords_{i}.weights.h5",
         )
 
-        model.encoder.load_weights(encoder_path)
-        model.decoder.load_weights(decoder_path)
+        model.encoder.load_weights(encoder_file)
+        model.decoder.load_weights(decoder_file)
 
         models.append(model)
 
@@ -104,6 +114,7 @@ def load_models():
 # ============================================================
 
 def run_inference(models, binary_code):
+
     design = np.array(
         [int(x) for x in binary_code],
         dtype=np.float32,
@@ -114,47 +125,77 @@ def run_inference(models, binary_code):
         dtype=tf.float32,
     )
 
-    initial_position = tf.convert_to_tensor(
+    # Initial nodal positions
+    init_pos = np.array(
         config["init-pos"],
-        dtype=tf.float32,
+        dtype=np.float32,
     )
 
-    initial_position = tf.expand_dims(
-        initial_position,
-        axis=0,
+    init_pos = tf.convert_to_tensor(
+        init_pos.reshape(1, NUM_COORD, 2),
+        dtype=tf.float32,
     )
 
     predictions = []
 
     for model in models:
+
         pred = model.recursive_generate(
             design,
-            initial_position[:, 0, :],
+            init_pos,
             training=False,
         )
 
         pred = pred.numpy()
 
-        predictions.append(pred[0])
+        predictions.append(pred)
 
-    return np.stack(predictions, axis=0)
+    predictions = np.stack(predictions, axis=0)
+
+    # Expected shape:
+    # (16, 9, 2)
+    return predictions
 
 
 # ============================================================
 # VALIDATION
 # ============================================================
 
-def validate_binary_code(binary_code):
-    if len(binary_code) != S:
+def validate_binary_code(code):
+
+    code = code.strip()
+
+    if len(code) != S:
         return False, f"Code must contain exactly {S} bits."
 
-    if any(char not in "01" for char in binary_code):
+    if any(char not in "01" for char in code):
         return False, "Code must contain only 0 and 1."
 
-    if "1" not in binary_code:
-        return False, "Code cannot be all zeros."
+    if set(code) == {"0"}:
+        return False, "The design cannot be completely empty."
 
     return True, ""
+
+
+# ============================================================
+# BINARY CODE
+# ============================================================
+
+def binary_code():
+
+    # IMPORTANT:
+    # AHC type numbers (1, 2, 3) are only identifiers.
+    # The actual model input is strictly binary:
+    #
+    # 0 -> 0
+    # any occupied cell -> 1
+    #
+    # Therefore AHC-2 and AHC-6 cells are converted to 1.
+
+    return "".join(
+        "1" if value != 0 else "0"
+        for value in st.session_state.block_values
+    )
 
 
 # ============================================================
@@ -162,31 +203,34 @@ def validate_binary_code(binary_code):
 # ============================================================
 
 def can_place_block(start, pattern):
-    end = start + len(pattern)
 
-    if start < 0 or end > S:
-        return False, "Structure does not fit within the 65 mm actuator."
+    length = len(pattern)
 
+    # Maximum of 3 structures
     if len(st.session_state.placed_blocks) >= 3:
-        return False, "Maximum of 3 structures allowed."
+        return False, "Maximum of 3 structures is allowed."
 
-    new_range = set(range(start, end))
+    # Must fit inside 65 mm
+    if start < 0 or start + length > S:
+        return False, "The structure must fit within the 65-mm actuator."
 
-    for block in st.session_state.placed_blocks:
-        old_start = block["start"]
-        old_end = old_start + len(block["pattern"])
-        old_range = set(range(old_start, old_end))
+    occupied = [
+        i
+        for i, value in enumerate(st.session_state.block_values)
+        if value != 0
+    ]
 
-        if new_range.intersection(old_range):
-            return False, "Structures cannot overlap."
+    new_cells = set(range(start, start + length))
 
-        gap = min(
-            abs(start - old_end),
-            abs(old_start - end),
-        )
+    # No overlap
+    if any(i in new_cells for i in occupied):
+        return False, "Structures cannot overlap."
 
-        if gap < 5:
-            return False, "Structures must have at least a 5 mm gap."
+    # Minimum 5-mm gap
+    for i in occupied:
+        for j in new_cells:
+            if abs(i - j) < 5:
+                return False, "Structures must have at least a 5-mm gap."
 
     return True, ""
 
@@ -195,11 +239,10 @@ def can_place_block(start, pattern):
 # PLACE AHC STRUCTURE
 # ============================================================
 
-def place_block():
-    ahc_type = st.session_state.selected_ahc
-    start = st.session_state.start_position
-    pattern = AHC_PATTERNS[ahc_type]
-    value = AHC_VALUES[ahc_type]
+def place_block(name, start):
+
+    pattern = AHC_PATTERNS[name]
+    value = AHC_VALUES[name]
 
     valid, message = can_place_block(start, pattern)
 
@@ -207,98 +250,84 @@ def place_block():
         st.error(message)
         return
 
+    # --------------------------------------------------------
     # IMPORTANT:
-    # block_values must ALWAYS contain only 0/1.
-    # The AHC value (1/2/3) is only metadata for the placed block.
+    # Store the actual binary pattern, NOT the AHC number.
+    #
+    # AHC-1 -> 10101010101
+    # AHC-2 -> 1100110011
+    # AHC-6 -> 111111
+    #
+    # The AHC number is metadata only.
+    # --------------------------------------------------------
+
     for j, bit in enumerate(pattern):
         st.session_state.block_values[start + j] = int(bit)
 
     st.session_state.placed_blocks.append(
         {
-            "type": ahc_type,
+            "name": name,
             "start": start,
-            "pattern": pattern,
+            "length": len(pattern),
             "value": value,
         }
     )
 
-    st.rerun()
-
 
 # ============================================================
-# RESET
+# RESET DESIGN
 # ============================================================
 
 def reset_design():
+
     st.session_state.block_values = [0] * S
     st.session_state.placed_blocks = []
     st.session_state.prediction = None
     st.session_state.prediction_code = None
-    st.rerun()
 
 
 # ============================================================
-# BINARY CODE
-# ============================================================
-
-def binary_code():
-    return "".join(
-        str(int(v))
-        for v in st.session_state.block_values
-    )
-
-
-# ============================================================
-# DRAW AHC PATTERN SAMPLES
+# AHC PATTERN DISPLAY
 # ============================================================
 
 def draw_ahc_patterns():
-    st.markdown(
-        "### AHC Structures"
-    )
+
+    st.markdown("### AHC structures")
 
     for name, pattern in AHC_PATTERNS.items():
 
         cells = ""
 
         for bit in pattern:
+
             if bit == "1":
-                cells += """
-                    <div style="
-                        width: 12px;
-                        height: 28px;
-                        background-color: #20B8E8;
-                        border-right: 1px solid white;
-                        box-sizing: border-box;
-                    "></div>
-                """
+                bg = "#18b7e8"
             else:
-                cells += """
-                    <div style="
-                        width: 12px;
-                        height: 28px;
-                        background-color: #D3D3D3;
-                        border-right: 1px solid white;
-                        box-sizing: border-box;
-                    "></div>
-                """
+                bg = "#d0d0d0"
+
+            cells += f"""
+            <div style="
+                width:16px;
+                height:28px;
+                background:{bg};
+                border-right:1px solid white;
+                display:inline-block;
+            "></div>
+            """
 
         st.markdown(
             f"""
             <div style="
-                margin-bottom: 4px;
-                font-weight: 600;
-                color: #343746;
+                margin-bottom:12px;
+                font-weight:600;
             ">
                 {name}
             </div>
 
             <div style="
-                display: flex;
-                height: 28px;
-                margin-bottom: 14px;
-                border: 1px solid #888;
-                width: fit-content;
+                display:flex;
+                align-items:center;
+                margin-bottom:18px;
             ">
                 {cells}
             </div>
@@ -308,31 +337,43 @@ def draw_ahc_patterns():
 
 
 # ============================================================
-# DRAW CURRENT DESIGN
+# CURRENT DESIGN DISPLAY
 # ============================================================
 
 def draw_design():
 
-    bits = "".join(
-        str(int(v))
-        for v in st.session_state.block_values
-    )
+    # Display is based on binary occupancy only.
+    # Every nonzero value is visually represented as occupied.
 
-    # --------------------------------------------------------
-    # Hydromatic Actuator label
-    # Left aligned with the beginning of the bar
-    # --------------------------------------------------------
+    cells = ""
+
+    for value in st.session_state.block_values:
+
+        if value != 0:
+            bg = "#18b7e8"
+        else:
+            bg = "#d0d0d0"
+
+        cells += f"""
+        <div style="
+            width:16px;
+            height:48px;
+            background:{bg};
+            border-right:1px solid white;
+            display:inline-block;
+            box-sizing:border-box;
+        "></div>
+        """
 
     st.markdown(
         """
         <div style="
-            width: 100%;
-            margin-top: 10px;
-            margin-bottom: 6px;
-            font-size: 20px;
-            font-weight: 700;
-            color: #343746;
-            text-align: left;
+            text-align:center;
+            font-size:28px;
+            font-weight:700;
+            margin-top:10px;
+            margin-bottom:20px;
+            color:#30313d;
         ">
             Hydromatic Actuator
         </div>
@@ -340,44 +381,14 @@ def draw_design():
         unsafe_allow_html=True,
     )
 
-    # --------------------------------------------------------
-    # 65-bit actuator bar
-    # --------------------------------------------------------
-
-    cells = ""
-
-    for bit in bits:
-
-        if bit == "1":
-            cells += """
-                <div style="
-                    flex: 1;
-                    height: 48px;
-                    background-color: #20B8E8;
-                    border-right: 1px solid white;
-                    box-sizing: border-box;
-                "></div>
-            """
-        else:
-            cells += """
-                <div style="
-                    flex: 1;
-                    height: 48px;
-                    background-color: #D3D3D3;
-                    border-right: 1px solid white;
-                    box-sizing: border-box;
-                "></div>
-            """
-
     st.markdown(
         f"""
         <div style="
-            display: flex;
-            width: 100%;
-            height: 48px;
-            border: 1px solid #888;
-            box-sizing: border-box;
-            overflow: hidden;
+            display:flex;
+            align-items:center;
+            width:100%;
+            overflow:hidden;
+            border:1px solid #777;
         ">
             {cells}
         </div>
@@ -385,19 +396,15 @@ def draw_design():
         unsafe_allow_html=True,
     )
 
-    # --------------------------------------------------------
-    # Scale
-    # --------------------------------------------------------
-
+    # Scale labels
     st.markdown(
         """
         <div style="
-            display: flex;
-            justify-content: space-between;
-            width: 100%;
-            margin-top: 12px;
-            font-size: 16px;
-            color: #343746;
+            display:flex;
+            justify-content:space-between;
+            margin-top:14px;
+            font-size:16px;
+            color:#444;
         ">
             <span>0</span>
             <span>10</span>
@@ -408,32 +415,13 @@ def draw_design():
             <span>60</span>
             <span>65 mm</span>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
-    # --------------------------------------------------------
-    # X-axis
-    # --------------------------------------------------------
-
-    st.markdown(
-        """
         <div style="
-            width: 100%;
-            margin-top: 18px;
-            border-top: 3px solid #222;
-            position: relative;
-            height: 28px;
+            margin-top:18px;
+            font-size:25px;
+            color:#222;
         ">
-            <span style="
-                position: absolute;
-                right: -4px;
-                top: -14px;
-                font-size: 25px;
-                color: #222;
-            ">
-                X →
-            </span>
+            ─────────────────────────────────────────── X →
         </div>
         """,
         unsafe_allow_html=True,
@@ -441,11 +429,14 @@ def draw_design():
 
 
 # ============================================================
-# PLOT PREDICTION
+# PLOTLY PREDICTION GRAPH
 # ============================================================
 
 def make_prediction_figure(pred_sequence):
 
+    frames = []
+
+    # Initial coordinates
     initial_x = np.linspace(
         4.0625,
         65.0,
@@ -454,32 +445,25 @@ def make_prediction_figure(pred_sequence):
 
     initial_y = np.zeros(NUM_COORD)
 
-    frames = []
-
     # --------------------------------------------------------
     # Initial frame
     # --------------------------------------------------------
-
-    x0 = np.concatenate(
-        [[0.0], initial_x]
-    )
-
-    y0 = np.concatenate(
-        [[0.0], initial_y]
-    )
 
     frames.append(
         go.Frame(
             name="0 min",
             data=[
                 go.Scatter(
-                    x=x0,
-                    y=y0,
-                    mode="lines",
+                    x=np.concatenate([[0.0], initial_x]),
+                    y=np.concatenate([[0.0], initial_y]),
+                    mode="lines+markers",
                     line=dict(
-                        color="red",
-                        width=3,
+                        width=4,
                     ),
+                    marker=dict(
+                        size=5,
+                    ),
+                    fill="tozeroy",
                 )
             ],
         )
@@ -492,11 +476,17 @@ def make_prediction_figure(pred_sequence):
     for t in range(NUM_TIMESTEPS):
 
         x = np.concatenate(
-            [[0.0], pred_sequence[:, t, 0]]
+            [
+                [0.0],
+                pred_sequence[:, t, 0],
+            ]
         )
 
         y = np.concatenate(
-            [[0.0], pred_sequence[:, t, 1]]
+            [
+                [0.0],
+                pred_sequence[:, t, 1],
+            ]
         )
 
         frames.append(
@@ -506,30 +496,33 @@ def make_prediction_figure(pred_sequence):
                     go.Scatter(
                         x=x,
                         y=y,
-                        mode="lines",
+                        mode="lines+markers",
                         line=dict(
-                            color="red",
-                            width=3,
+                            width=4,
                         ),
+                        marker=dict(
+                            size=5,
+                        ),
+                        fill="tozeroy",
                     )
                 ],
             )
         )
 
-    # --------------------------------------------------------
-    # Initial figure
-    # --------------------------------------------------------
-
+    # Initial graph
     fig = go.Figure(
         data=[
             go.Scatter(
-                x=x0,
-                y=y0,
-                mode="lines",
+                x=np.concatenate([[0.0], initial_x]),
+                y=np.concatenate([[0.0], initial_y]),
+                mode="lines+markers",
                 line=dict(
-                    color="red",
-                    width=3,
+                    width=4,
                 ),
+                marker=dict(
+                    size=5,
+                ),
+                fill="tozeroy",
             )
         ],
         frames=frames,
@@ -538,26 +531,29 @@ def make_prediction_figure(pred_sequence):
     fig.update_layout(
         xaxis=dict(
             range=[-70, 80],
-            title="X",
+            title="X position",
+            zeroline=True,
         ),
         yaxis=dict(
             range=[-90, 60],
-            title="Y",
+            title="Y position",
+            zeroline=True,
             scaleanchor="x",
             scaleratio=1,
         ),
-        height=600,
+        height=650,
         margin=dict(
-            l=40,
-            r=40,
-            t=60,
-            b=40,
+            l=50,
+            r=30,
+            t=50,
+            b=50,
         ),
-        title="50°C (as-prepared)",
         updatemenus=[
             {
                 "type": "buttons",
                 "showactive": False,
+                "x": 0.1,
+                "y": 1.15,
                 "buttons": [
                     {
                         "label": "▶ Start Deformation",
@@ -596,9 +592,9 @@ def make_prediction_figure(pred_sequence):
         sliders=[
             {
                 "active": 0,
-                "currentvalue": {
-                    "prefix": "Time: ",
-                },
+                "x": 0.1,
+                "y": 0,
+                "len": 0.85,
                 "steps": [
                     {
                         "label": TIMESTEPS[i],
@@ -627,96 +623,126 @@ def make_prediction_figure(pred_sequence):
 
 
 # ============================================================
-# PAGE HEADER
+# PAGE TITLE
 # ============================================================
 
 st.title("Hydromatic Simulator")
 
 st.markdown(
-    "Configure a 65-bit Hydromatic Actuator and predict its deformation."
+    "Configure a 65-bit Hydromatic Actuator design and predict its deformation."
 )
 
 
 # ============================================================
-# SIDEBAR
+# DESIGN SECTION
 # ============================================================
 
-with st.sidebar:
-
-    st.header("Design Editor")
-
-    draw_ahc_patterns()
-
-    st.markdown("---")
-
-    st.selectbox(
-        "AHC structure",
-        list(AHC_PATTERNS.keys()),
-        key="selected_ahc",
-    )
-
-    st.number_input(
-        "Starting position (mm)",
-        min_value=0,
-        max_value=S - 1,
-        value=0,
-        step=1,
-        key="start_position",
-    )
-
-    st.button(
-        "Place structure",
-        on_click=place_block,
-        use_container_width=True,
-    )
-
-    st.button(
-        "Reset",
-        on_click=reset_design,
-        use_container_width=True,
-    )
-
-    st.markdown("---")
-
-    if st.session_state.placed_blocks:
-
-        st.markdown("### Placed structures")
-
-        for block in st.session_state.placed_blocks:
-            st.write(
-                f"{block['type']} — "
-                f"position {block['start']}–"
-                f"{block['start'] + len(block['pattern'])} mm"
-            )
-
-
-# ============================================================
-# CURRENT DESIGN
-# ============================================================
-
-st.subheader("Current 65-bit design")
+st.header("Current 65-bit design")
 
 draw_design()
 
-st.markdown("")
+
+# ============================================================
+# CURRENT BINARY CODE
+# ============================================================
+
+# IMPORTANT:
+# This now ALWAYS displays a true binary string.
+# AHC-2 and AHC-6 occupied cells are displayed as 1,
+# never as 2 or 3.
 
 current_code = binary_code()
 
 st.code(
     current_code,
-    language="text",
+    language=None,
 )
 
 
 # ============================================================
-# ADVANCED MANUAL CODE
+# DESIGN CONTROLS
 # ============================================================
 
-with st.expander(
-    "Advanced: enter a 65-bit binary code"
-):
+st.subheader("Add AHC structure")
 
-    st.write("65-bit binary code")
+col1, col2, col3 = st.columns([2, 1, 1])
+
+with col1:
+
+    selected_ahc = st.selectbox(
+        "AHC type",
+        list(AHC_PATTERNS.keys()),
+    )
+
+with col2:
+
+    start_position = st.number_input(
+        "Starting position (mm)",
+        min_value=0,
+        max_value=S - 1,
+        value=0,
+        step=1,
+    )
+
+with col3:
+
+    st.write("")
+    st.write("")
+
+    if st.button(
+        "Place structure",
+        use_container_width=True,
+    ):
+
+        place_block(
+            selected_ahc,
+            int(start_position),
+        )
+
+        st.rerun()
+
+
+col_reset, col_print = st.columns(2)
+
+with col_reset:
+
+    if st.button(
+        "Reset",
+        use_container_width=True,
+    ):
+
+        reset_design()
+        st.rerun()
+
+with col_print:
+
+    if st.button(
+        "Print Code",
+        use_container_width=True,
+    ):
+
+        st.code(
+            binary_code(),
+            language=None,
+        )
+
+
+# ============================================================
+# AHC PATTERN REFERENCE
+# ============================================================
+
+with st.expander("AHC pattern reference"):
+
+    draw_ahc_patterns()
+
+
+# ============================================================
+# ADVANCED MANUAL BINARY INPUT
+# ============================================================
+
+with st.expander("Advanced: enter a 65-bit binary code"):
+
+    st.markdown("**65-bit binary code**")
 
     manual_code = st.text_input(
         "65-bit binary code",
@@ -730,72 +756,72 @@ with st.expander(
             manual_code
         )
 
-        if not valid:
-            st.error(message)
+        if valid:
 
-        else:
+            # Convert the manual binary string into
+            # the internal occupancy representation.
             st.session_state.block_values = [
-                int(x)
-                for x in manual_code
+                int(bit)
+                for bit in manual_code
             ]
 
+            # Manual code is not associated with
+            # specific AHC metadata.
             st.session_state.placed_blocks = []
 
-            st.session_state.prediction = None
-            st.session_state.prediction_code = None
+            st.success(
+                "Manual 65-bit binary code applied."
+            )
 
             st.rerun()
+
+        else:
+
+            st.error(message)
 
 
 # ============================================================
 # PREDICTION
 # ============================================================
 
-st.markdown("---")
+st.header("Prediction")
 
 valid_code, validation_message = validate_binary_code(
-    current_code
+    binary_code()
 )
 
-predict_disabled = (
-    not valid_code
-    or len(st.session_state.placed_blocks) < 2
-)
+if not valid_code:
 
-if len(st.session_state.placed_blocks) < 2:
-    st.info(
-        "Place at least 2 AHC structures before prediction."
-    )
+    st.warning(validation_message)
 
-if st.button(
-    "Predict",
-    type="primary",
-    disabled=predict_disabled,
-    use_container_width=True,
-):
+else:
 
-    with st.spinner(
-        "Loading models and generating prediction..."
+    if st.button(
+        "Predict deformation",
+        type="primary",
+        use_container_width=True,
     ):
 
-        models = load_models()
+        with st.spinner(
+            "Loading trained models and predicting deformation..."
+        ):
 
-        prediction = run_inference(
-            models,
-            current_code,
-        )
+            models = load_models()
 
-        st.session_state.prediction = prediction
-        st.session_state.prediction_code = current_code
+            prediction = run_inference(
+                models,
+                binary_code(),
+            )
+
+            st.session_state.prediction = prediction
+            st.session_state.prediction_code = binary_code()
 
 
 # ============================================================
-# PREDICTION RESULTS
+# DISPLAY PREDICTION
 # ============================================================
 
 if st.session_state.prediction is not None:
-
-    st.markdown("---")
 
     st.subheader("Predicted deformation")
 
@@ -809,10 +835,12 @@ if st.session_state.prediction is not None:
     )
 
     # --------------------------------------------------------
-    # Numerical results
+    # Prediction data
     # --------------------------------------------------------
 
-    prediction = st.session_state.prediction
+    st.subheader("Prediction data")
+
+    pred = st.session_state.prediction
 
     rows = []
 
@@ -824,21 +852,21 @@ if st.session_state.prediction is not None:
                 {
                     "Time": config["timesteps"][t],
                     "Node": node + 1,
-                    "X": prediction[node, t, 0],
-                    "Y": prediction[node, t, 1],
+                    "X": pred[node, t, 0],
+                    "Y": pred[node, t, 1],
                 }
             )
 
-    df = pd.DataFrame(rows)
-
-    st.subheader("Prediction data")
+    prediction_df = pd.DataFrame(rows)
 
     st.dataframe(
-        df,
+        prediction_df,
         use_container_width=True,
     )
 
-    csv = df.to_csv(index=False)
+    csv = prediction_df.to_csv(
+        index=False
+    )
 
     st.download_button(
         "Download prediction CSV",
