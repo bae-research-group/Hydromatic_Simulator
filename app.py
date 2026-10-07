@@ -484,7 +484,6 @@ def make_prediction_figure(pred_sequence):
                         marker=dict(
                             size=5,
                         ),
-                        fill="tozeroy",
                     )
                 ],
             )
@@ -503,7 +502,6 @@ def make_prediction_figure(pred_sequence):
                 marker=dict(
                     size=5,
                 ),
-                fill="tozeroy",
             )
         ],
         frames=frames,
