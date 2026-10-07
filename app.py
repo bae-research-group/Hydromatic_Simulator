@@ -5,13 +5,12 @@ import streamlit as st
 import tensorflow as tf
 import plotly.graph_objects as go
 
-
 from Hydromatic_Simulator.model.model import GeneratorModel
 from Hydromatic_Simulator.utils.config import config
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -20,16 +19,16 @@ st.set_page_config(
     layout="wide",
 )
 
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+
 S = config["structure-dim"]
 NUM_COORD = config["num-coord"]
 NUM_TIMESTEPS = config["num-timesteps"]
 
 TIMESTEPS = ["0 min"] + config["timesteps"]
-
-
-# ============================================================
-# AHC PATTERNS
-# ============================================================
 
 AHC_PATTERNS = {
     "AHC-1": "10101010101",
@@ -48,27 +47,16 @@ AHC_VALUES = {
 # SESSION STATE
 # ============================================================
 
-def initialize_editor():
-
-    if "block_values" not in st.session_state:
-        st.session_state.block_values = [0] * S
-
-    if "placed_blocks" not in st.session_state:
-        st.session_state.placed_blocks = []
-
-    if "prediction" not in st.session_state:
-        st.session_state.prediction = None
-
-    if "prediction_code" not in st.session_state:
-        st.session_state.prediction_code = None
-
-
-def reset_editor():
-
+if "block_values" not in st.session_state:
     st.session_state.block_values = [0] * S
+
+if "placed_blocks" not in st.session_state:
     st.session_state.placed_blocks = []
 
+if "prediction" not in st.session_state:
     st.session_state.prediction = None
+
+if "prediction_code" not in st.session_state:
     st.session_state.prediction_code = None
 
 
@@ -76,64 +64,32 @@ def reset_editor():
 # MODEL LOADING
 # ============================================================
 
-@st.cache_resource(show_spinner="Loading trained Hydromatic models...")
-def load_web_models():
-    """
-    Load all 16 trained GeneratorModel instances.
-
-    This intentionally avoids test_data.pkl.
-    The web application only needs the trained weights
-    and model architecture.
-    """
-
+@st.cache_resource
+def load_models():
     models = []
 
-    weights_dir = os.path.join(
-        "Hydromatic_Simulator",
-        "model",
-        "weights",
-    )
+    dummy_design = tf.zeros((1, S))
+    dummy_position = tf.zeros((1, NUM_COORD, 2))
 
     for i in range(NUM_COORD):
-
         model = GeneratorModel()
 
-        # Build the model before loading weights.
-        dummy_design = tf.zeros(
-            (1, config["structure-dim"]),
-            dtype=tf.float32,
-        )
-
-        dummy_position = tf.zeros(
-            (1, config["nodal-dim"]),
-            dtype=tf.float32,
-        )
-
+        # Build the model
         _ = model.recursive_generate(
             dummy_design,
-            dummy_position,
+            dummy_position[:, 0, :],
             training=False,
         )
 
-        encoder_path = os.path.join(
-            weights_dir,
-            f"encoder_{NUM_COORD}coords_{i}.weights.h5",
+        encoder_path = (
+            f"./Hydromatic_Simulator/model/weights/"
+            f"encoder_{NUM_COORD}coords_{i}.weights.h5"
         )
 
-        decoder_path = os.path.join(
-            weights_dir,
-            f"decoder_{NUM_COORD}coords_{i}.weights.h5",
+        decoder_path = (
+            f"./Hydromatic_Simulator/model/weights/"
+            f"decoder_{NUM_COORD}coords_{i}.weights.h5"
         )
-
-        if not os.path.exists(encoder_path):
-            raise FileNotFoundError(
-                f"Missing encoder weight file:\n{encoder_path}"
-            )
-
-        if not os.path.exists(decoder_path):
-            raise FileNotFoundError(
-                f"Missing decoder weight file:\n{decoder_path}"
-            )
 
         model.encoder.load_weights(encoder_path)
         model.decoder.load_weights(decoder_path)
@@ -147,392 +103,138 @@ def load_web_models():
 # INFERENCE
 # ============================================================
 
-def run_web_inference(models, binary_string):
-    """
-    Run the trained 16-coordinate generator models.
-
-    Returns
-    -------
-    prediction : np.ndarray
-
-        Shape:
-
-            (16, 9, 2)
-
-        16 = predicted nodal coordinates
-        9  = deformation timesteps
-        2  = x/y coordinates
-    """
-
-    design_input = np.asarray(
-        [int(x) for x in binary_string],
+def run_inference(models, binary_code):
+    design = np.array(
+        [int(x) for x in binary_code],
         dtype=np.float32,
     )
 
-    if design_input.shape[0] != S:
-        raise ValueError(
-            f"Expected {S} binary values, "
-            f"received {design_input.shape[0]}."
-        )
+    design = tf.convert_to_tensor(
+        design.reshape(1, -1),
+        dtype=tf.float32,
+    )
 
-    predictions = []
+    initial_position = tf.convert_to_tensor(
+        config["init-pos"],
+        dtype=tf.float32,
+    )
 
-    initial_positions = config["init-pos"]
-
-    for i, model in enumerate(models):
-
-        design_tensor = tf.convert_to_tensor(
-            design_input[None, :],
-            dtype=tf.float32,
-        )
-
-        initial_position = tf.convert_to_tensor(
-            initial_positions[i][None, :],
-            dtype=tf.float32,
-        )
-
-        prediction = model.recursive_generate(
-            design_tensor,
-            initial_position,
-            training=False,
-        )
-
-        prediction = prediction.numpy()
-
-        # Expected shape: (1, 9, 2)
-        prediction = np.squeeze(
-            prediction,
-            axis=0,
-        )
-
-        predictions.append(prediction)
-
-    return np.stack(
-        predictions,
+    initial_position = tf.expand_dims(
+        initial_position,
         axis=0,
     )
 
+    predictions = []
+
+    for model in models:
+        pred = model.recursive_generate(
+            design,
+            initial_position[:, 0, :],
+            training=False,
+        )
+
+        pred = pred.numpy()
+
+        predictions.append(pred[0])
+
+    return np.stack(predictions, axis=0)
+
 
 # ============================================================
-# DESIGN VALIDATION
+# VALIDATION
 # ============================================================
 
-def validate_binary_code(binary_string):
+def validate_binary_code(binary_code):
+    if len(binary_code) != S:
+        return False, f"Code must contain exactly {S} bits."
 
-    if len(binary_string) != S:
+    if any(char not in "01" for char in binary_code):
+        return False, "Code must contain only 0 and 1."
 
-        return (
-            False,
-            f"Binary code must contain exactly {S} bits.",
-        )
-
-    if any(char not in "01" for char in binary_string):
-
-        return (
-            False,
-            "Binary code may contain only 0 and 1.",
-        )
-
-    if set(binary_string) == {"0"}:
-
-        return (
-            False,
-            "The design cannot be an all-zero structure.",
-        )
+    if "1" not in binary_code:
+        return False, "Code cannot be all zeros."
 
     return True, ""
 
 
 # ============================================================
-# AHC PLACEMENT
+# PLACEMENT VALIDATION
 # ============================================================
 
-def can_place_block(start, pattern_length):
+def can_place_block(start, pattern):
+    end = start + len(pattern)
 
-    end = start + pattern_length - 1
+    if start < 0 or end > S:
+        return False, "Structure does not fit within the 65 mm actuator."
 
-    # Maximum of three structures.
     if len(st.session_state.placed_blocks) >= 3:
+        return False, "Maximum of 3 structures allowed."
 
-        return (
-            False,
-            "A maximum of three AHC structures can be placed.",
-        )
+    new_range = set(range(start, end))
 
-    # Must remain inside the 65-mm actuator.
-    if start < 0 or end >= S:
+    for block in st.session_state.placed_blocks:
+        old_start = block["start"]
+        old_end = old_start + len(block["pattern"])
+        old_range = set(range(old_start, old_end))
 
-        return (
-            False,
-            "The AHC structure would exceed the 65-mm actuator.",
-        )
-
-    new_range = set(
-        range(
-            start,
-            end + 1,
-        )
-    )
-
-    # Check against existing structures.
-    for old_start, old_end, _ in st.session_state.placed_blocks:
-
-        old_range = set(
-            range(
-                old_start,
-                old_end + 1,
-            )
-        )
-
-        # No overlap.
         if new_range.intersection(old_range):
+            return False, "Structures cannot overlap."
 
-            return (
-                False,
-                "The new structure overlaps an existing AHC structure.",
-            )
+        gap = min(
+            abs(start - old_end),
+            abs(old_start - end),
+        )
 
-        # Minimum 5-mm separation.
-        if abs(start - old_end) < 5:
-
-            return (
-                False,
-                "AHC structures must have at least a 5-mm gap.",
-            )
-
-        if abs(old_start - end) < 5:
-
-            return (
-                False,
-                "AHC structures must have at least a 5-mm gap.",
-            )
+        if gap < 5:
+            return False, "Structures must have at least a 5 mm gap."
 
     return True, ""
 
 
-def place_block(ahc_name, start):
+# ============================================================
+# PLACE AHC STRUCTURE
+# ============================================================
 
-    pattern = AHC_PATTERNS[ahc_name]
-    value = AHC_VALUES[ahc_name]
+def place_block():
+    ahc_type = st.session_state.selected_ahc
+    start = st.session_state.start_position
+    pattern = AHC_PATTERNS[ahc_type]
+    value = AHC_VALUES[ahc_type]
 
-    valid, message = can_place_block(
-        start,
-        len(pattern),
-    )
+    valid, message = can_place_block(start, pattern)
 
     if not valid:
+        st.error(message)
+        return
 
-        return False, message
-
-    end = start + len(pattern) - 1
-
-    # Write the pattern into the 65-bit design.
+    # IMPORTANT:
+    # block_values must ALWAYS contain only 0/1.
+    # The AHC value (1/2/3) is only metadata for the placed block.
     for j, bit in enumerate(pattern):
-
-        st.session_state.block_values[
-            start + j
-        ] = value if bit == "1" else 0
+        st.session_state.block_values[start + j] = int(bit)
 
     st.session_state.placed_blocks.append(
-        (
-            start,
-            end,
-            value,
-        )
+        {
+            "type": ahc_type,
+            "start": start,
+            "pattern": pattern,
+            "value": value,
+        }
     )
 
-    return True, ""
+    st.rerun()
 
 
 # ============================================================
-# GRAPHICAL AHC PATTERN DISPLAY
+# RESET
 # ============================================================
 
-def draw_ahc_patterns():
-    """
-    Display AHC-1, AHC-2, and AHC-6 as graphical patterns,
-    matching the visual language of the original Tkinter GUI.
-    """
-
-    st.markdown("### AHC structures")
-
-    for name, pattern in AHC_PATTERNS.items():
-
-        cells = ""
-
-        for bit in pattern:
-
-            if bit == "1":
-
-                background = "#00BFFF"
-
-            else:
-
-                background = "#808080"
-
-            cells += f"""
-<div style="
-    width:16px;
-    height:28px;
-    background:{background};
-    border-right:1px solid white;
-    box-sizing:border-box;
-"></div>
-"""
-
-        html = f"""
-<div style="
-    margin-bottom:20px;
-">
-
-<div style="
-    font-weight:bold;
-    font-size:16px;
-    margin-bottom:5px;
-">
-{name}
-</div>
-
-<div style="
-    display:flex;
-    width:max-content;
-    border:1px solid #777;
-">
-{cells}
-</div>
-
-<div style="
-    font-family:monospace;
-    font-size:12px;
-    color:#555;
-    margin-top:4px;
-">
-{pattern}
-</div>
-
-</div>
-"""
-
-        st.markdown(
-            html,
-            unsafe_allow_html=True,
-        )
-
-
-# ============================================================
-# GRAPHICAL 65-MM ACTUATOR DESIGN
-# ============================================================
-
-def draw_design():
-
-    """
-    Display the current 65-mm actuator as a graphical strip.
-
-    Gray:
-        Empty actuator
-
-    Blue:
-        AHC structure
-    """
-
-    values = st.session_state.block_values
-
-    cells = ""
-
-    for i, value in enumerate(values):
-
-        if value == 0:
-
-            background = "#D3D3D3"
-
-        else:
-
-            background = "#00BFFF"
-
-        cells += f"""
-<div
-    title="{i} mm: {value}"
-    style="
-        width:10px;
-        height:30px;
-        background:{background};
-        border-right:1px solid white;
-        box-sizing:border-box;
-    ">
-</div>
-"""
-
-    html = f"""
-<div style="
-    width:100%;
-    overflow-x:auto;
-    padding:15px 0 45px 0;
-">
-
-<div style="
-    min-width:700px;
-">
-
-<div style="
-    font-size:20px;
-    font-weight:bold;
-    text-align:center;
-    margin-bottom:10px;
-">
-Hydromatic Actuator
-</div>
-
-<div style="
-    display:flex;
-    width:650px;
-    height:30px;
-    border:1px solid #777;
-">
-{cells}
-</div>
-
-<div style="
-    width:650px;
-    display:flex;
-    justify-content:space-between;
-    margin-top:8px;
-    font-size:13px;
-">
-<span>0</span>
-<span>10</span>
-<span>20</span>
-<span>30</span>
-<span>40</span>
-<span>50</span>
-<span>60</span>
-<span>65 mm</span>
-</div>
-
-<div style="
-    width:650px;
-    margin-top:10px;
-    border-top:2px solid #222;
-    position:relative;
-">
-<span style="
-    position:absolute;
-    right:-25px;
-    top:-13px;
-    font-size:18px;
-">
-x →
-</span>
-</div>
-
-</div>
-
-</div>
-"""
-
-    st.markdown(
-        html,
-        unsafe_allow_html=True,
-    )
+def reset_design():
+    st.session_state.block_values = [0] * S
+    st.session_state.placed_blocks = []
+    st.session_state.prediction = None
+    st.session_state.prediction_code = None
+    st.rerun()
 
 
 # ============================================================
@@ -540,320 +242,350 @@ x →
 # ============================================================
 
 def binary_code():
-
     return "".join(
-        str(x)
-        for x in st.session_state.block_values
+        str(int(v))
+        for v in st.session_state.block_values
     )
 
 
 # ============================================================
-# PREDICTION VISUALIZATION
+# DRAW AHC PATTERN SAMPLES
 # ============================================================
 
-def draw_contour(
-    centerline,
-    width=2.0,
-):
-
-    centerline = np.asarray(
-        centerline
+def draw_ahc_patterns():
+    st.markdown(
+        "### AHC Structures"
     )
 
-    x = centerline[:, 0]
-    y = centerline[:, 1]
+    for name, pattern in AHC_PATTERNS.items():
 
-    dx = np.gradient(x)
-    dy = np.gradient(y)
+        cells = ""
 
-    tangent_norm = np.sqrt(
-        dx**2 + dy**2
-    )
+        for bit in pattern:
+            if bit == "1":
+                cells += """
+                    <div style="
+                        width: 12px;
+                        height: 28px;
+                        background-color: #20B8E8;
+                        border-right: 1px solid white;
+                        box-sizing: border-box;
+                    "></div>
+                """
+            else:
+                cells += """
+                    <div style="
+                        width: 12px;
+                        height: 28px;
+                        background-color: #D3D3D3;
+                        border-right: 1px solid white;
+                        box-sizing: border-box;
+                    "></div>
+                """
 
-    tangent_norm[
-        tangent_norm == 0
-    ] = 1.0
+        st.markdown(
+            f"""
+            <div style="
+                margin-bottom: 4px;
+                font-weight: 600;
+                color: #343746;
+            ">
+                {name}
+            </div>
 
-    nx = -dy / tangent_norm
-    ny = dx / tangent_norm
-
-    x1 = x + nx * width / 2
-    y1 = y + ny * width / 2
-
-    x2 = x - nx * width / 2
-    y2 = y - ny * width / 2
-
-    contour_x = np.concatenate(
-        [
-            x1,
-            x2[::-1],
-        ]
-    )
-
-    contour_y = np.concatenate(
-        [
-            y1,
-            y2[::-1],
-        ]
-    )
-
-    return (
-        contour_x,
-        contour_y,
-    )
-
-
-def make_frame(
-    prediction,
-    timestep,
-):
-
-    if timestep == 0:
-
-        x = np.linspace(
-            4.0625,
-            65.0,
-            16,
+            <div style="
+                display: flex;
+                height: 28px;
+                margin-bottom: 14px;
+                border: 1px solid #888;
+                width: fit-content;
+            ">
+                {cells}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        y = np.zeros(16)
 
-        centerline = np.column_stack(
-            [
-                np.concatenate(
-                    [
-                        [0.0],
-                        x,
-                    ]
-                ),
-                np.concatenate(
-                    [
-                        [0.0],
-                        y,
-                    ]
-                ),
-            ]
-        )
+# ============================================================
+# DRAW CURRENT DESIGN
+# ============================================================
 
-        condition = "50°C (as-prepared)"
+def draw_design():
 
-    else:
+    bits = "".join(
+        str(int(v))
+        for v in st.session_state.block_values
+    )
 
-        xy = prediction[
-            :,
-            timestep - 1,
-            :,
-        ]
+    # --------------------------------------------------------
+    # Hydromatic Actuator label
+    # Left aligned with the beginning of the bar
+    # --------------------------------------------------------
 
-        centerline = np.vstack(
-            [
-                np.array(
-                    [
-                        [0.0, 0.0]
-                    ]
-                ),
-                xy,
-            ]
-        )
+    st.markdown(
+        """
+        <div style="
+            width: 100%;
+            margin-top: 10px;
+            margin-bottom: 6px;
+            font-size: 20px;
+            font-weight: 700;
+            color: #343746;
+            text-align: left;
+        ">
+            Hydromatic Actuator
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        if timestep == NUM_TIMESTEPS:
+    # --------------------------------------------------------
+    # 65-bit actuator bar
+    # --------------------------------------------------------
 
-            condition = "20°C (equilibrium)"
+    cells = ""
 
+    for bit in bits:
+
+        if bit == "1":
+            cells += """
+                <div style="
+                    flex: 1;
+                    height: 48px;
+                    background-color: #20B8E8;
+                    border-right: 1px solid white;
+                    box-sizing: border-box;
+                "></div>
+            """
         else:
+            cells += """
+                <div style="
+                    flex: 1;
+                    height: 48px;
+                    background-color: #D3D3D3;
+                    border-right: 1px solid white;
+                    box-sizing: border-box;
+                "></div>
+            """
 
-            condition = "20°C"
-
-    contour_x, contour_y = draw_contour(
-        centerline,
-        width=2,
+    st.markdown(
+        f"""
+        <div style="
+            display: flex;
+            width: 100%;
+            height: 48px;
+            border: 1px solid #888;
+            box-sizing: border-box;
+            overflow: hidden;
+        ">
+            {cells}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    return (
-        centerline,
-        contour_x,
-        contour_y,
-        condition,
+    # --------------------------------------------------------
+    # Scale
+    # --------------------------------------------------------
+
+    st.markdown(
+        """
+        <div style="
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            margin-top: 12px;
+            font-size: 16px;
+            color: #343746;
+        ">
+            <span>0</span>
+            <span>10</span>
+            <span>20</span>
+            <span>30</span>
+            <span>40</span>
+            <span>50</span>
+            <span>60</span>
+            <span>65 mm</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # X-axis
+    # --------------------------------------------------------
+
+    st.markdown(
+        """
+        <div style="
+            width: 100%;
+            margin-top: 18px;
+            border-top: 3px solid #222;
+            position: relative;
+            height: 28px;
+        ">
+            <span style="
+                position: absolute;
+                right: -4px;
+                top: -14px;
+                font-size: 25px;
+                color: #222;
+            ">
+                X →
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
 # ============================================================
-# PLOTLY ANIMATION
+# PLOT PREDICTION
 # ============================================================
 
-def create_animation(prediction):
+def make_prediction_figure(pred_sequence):
 
-    (
-        centerline,
-        contour_x,
-        contour_y,
-        condition,
-    ) = make_frame(
-        prediction,
-        0,
+    initial_x = np.linspace(
+        4.0625,
+        65.0,
+        NUM_COORD,
     )
 
-    fig = go.Figure()
-
-    # --------------------------------------------------------
-    # Initial centerline
-    # --------------------------------------------------------
-
-    fig.add_trace(
-        go.Scatter(
-            x=centerline[:, 0],
-            y=centerline[:, 1],
-            mode="lines+markers",
-            line=dict(width=3),
-            marker=dict(size=6),
-            name="Predicted centerline",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Initial contour
-    # --------------------------------------------------------
-
-    fig.add_trace(
-        go.Scatter(
-            x=contour_x,
-            y=contour_y,
-            mode="lines",
-            fill="toself",
-            name="Actuator contour",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Animation frames
-    # --------------------------------------------------------
+    initial_y = np.zeros(NUM_COORD)
 
     frames = []
 
-    for t in range(
-        NUM_TIMESTEPS + 1
-    ):
+    # --------------------------------------------------------
+    # Initial frame
+    # --------------------------------------------------------
 
-        (
-            centerline,
-            contour_x,
-            contour_y,
-            frame_condition,
-        ) = make_frame(
-            prediction,
-            t,
+    x0 = np.concatenate(
+        [[0.0], initial_x]
+    )
+
+    y0 = np.concatenate(
+        [[0.0], initial_y]
+    )
+
+    frames.append(
+        go.Frame(
+            name="0 min",
+            data=[
+                go.Scatter(
+                    x=x0,
+                    y=y0,
+                    mode="lines",
+                    line=dict(
+                        color="red",
+                        width=3,
+                    ),
+                )
+            ],
+        )
+    )
+
+    # --------------------------------------------------------
+    # Predicted frames
+    # --------------------------------------------------------
+
+    for t in range(NUM_TIMESTEPS):
+
+        x = np.concatenate(
+            [[0.0], pred_sequence[:, t, 0]]
+        )
+
+        y = np.concatenate(
+            [[0.0], pred_sequence[:, t, 1]]
         )
 
         frames.append(
             go.Frame(
-                name=str(t),
+                name=TIMESTEPS[t + 1],
                 data=[
                     go.Scatter(
-                        x=centerline[:, 0],
-                        y=centerline[:, 1],
-                        mode="lines+markers",
-                        line=dict(width=3),
-                        marker=dict(size=6),
-                    ),
-                    go.Scatter(
-                        x=contour_x,
-                        y=contour_y,
+                        x=x,
+                        y=y,
                         mode="lines",
-                        fill="toself",
-                    ),
+                        line=dict(
+                            color="red",
+                            width=3,
+                        ),
+                    )
                 ],
             )
         )
 
-    fig.frames = frames
+    # --------------------------------------------------------
+    # Initial figure
+    # --------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Layout
-    # --------------------------------------------------------
+    fig = go.Figure(
+        data=[
+            go.Scatter(
+                x=x0,
+                y=y0,
+                mode="lines",
+                line=dict(
+                    color="red",
+                    width=3,
+                ),
+            )
+        ],
+        frames=frames,
+    )
 
     fig.update_layout(
-
-        title=dict(
-            text=(
-                f"Deformation: "
-                f"{TIMESTEPS[0]} — "
-                f"{condition}"
-            )
-        ),
-
         xaxis=dict(
-            title="x (mm)",
-            range=[
-                -70,
-                80,
-            ],
-            zeroline=True,
-            scaleanchor="y",
+            range=[-70, 80],
+            title="X",
+        ),
+        yaxis=dict(
+            range=[-90, 60],
+            title="Y",
+            scaleanchor="x",
             scaleratio=1,
         ),
-
-        yaxis=dict(
-            title="y (mm)",
-            range=[
-                -90,
-                60,
-            ],
-            zeroline=True,
-        ),
-
-        height=650,
-
+        height=600,
         margin=dict(
-            l=50,
-            r=30,
-            t=80,
-            b=50,
+            l=40,
+            r=40,
+            t=60,
+            b=40,
         ),
-
+        title="50°C (as-prepared)",
         updatemenus=[
             {
                 "type": "buttons",
                 "showactive": False,
-                "x": 0.05,
-                "y": 1.12,
-
                 "buttons": [
-
                     {
-                        "label": "▶ Play",
+                        "label": "▶ Start Deformation",
                         "method": "animate",
-
                         "args": [
                             None,
-
                             {
                                 "frame": {
-                                    "duration": 200,
+                                    "duration": 700,
                                     "redraw": True,
                                 },
-
                                 "transition": {
-                                    "duration": 0,
+                                    "duration": 200,
                                 },
-
                                 "fromcurrent": True,
                             },
                         ],
                     },
-
                     {
-                        "label": "⏸ Pause",
+                        "label": "⏸ Stop Deformation",
                         "method": "animate",
-
                         "args": [
                             [None],
-
                             {
                                 "frame": {
                                     "duration": 0,
                                     "redraw": False,
                                 },
-
                                 "mode": "immediate",
                             },
                         ],
@@ -861,39 +593,31 @@ def create_animation(prediction):
                 ],
             }
         ],
-
         sliders=[
             {
                 "active": 0,
-                "x": 0.15,
-                "y": 1.05,
-                "len": 0.75,
-
+                "currentvalue": {
+                    "prefix": "Time: ",
+                },
                 "steps": [
-
                     {
-                        "label": TIMESTEPS[t],
+                        "label": TIMESTEPS[i],
                         "method": "animate",
-
                         "args": [
-                            [str(t)],
-
+                            [TIMESTEPS[i]],
                             {
+                                "mode": "immediate",
                                 "frame": {
                                     "duration": 0,
                                     "redraw": True,
                                 },
-
                                 "transition": {
                                     "duration": 0,
                                 },
                             },
                         ],
                     }
-
-                    for t in range(
-                        NUM_TIMESTEPS + 1
-                    )
+                    for i in range(len(TIMESTEPS))
                 ],
             }
         ],
@@ -903,66 +627,13 @@ def create_animation(prediction):
 
 
 # ============================================================
-# RESULT DATAFRAME
+# PAGE HEADER
 # ============================================================
 
-def prediction_dataframe(prediction):
-
-    rows = []
-
-    for node in range(
-        NUM_COORD
-    ):
-
-        for t in range(
-            NUM_TIMESTEPS
-        ):
-
-            rows.append(
-                {
-                    "node": node + 1,
-
-                    "time": config[
-                        "timesteps"
-                    ][t],
-
-                    "x_mm": prediction[
-                        node,
-                        t,
-                        0,
-                    ],
-
-                    "y_mm": prediction[
-                        node,
-                        t,
-                        1,
-                    ],
-                }
-            )
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# MAIN APPLICATION
-# ============================================================
-
-initialize_editor()
-
-
-# ============================================================
-# TITLE
-# ============================================================
-
-st.title(
-    "🔵 Hydromatic Simulator"
-)
+st.title("Hydromatic Simulator")
 
 st.markdown(
-    """
-Predict the time-dependent deformation of a designed
-hydrogel actuator using the trained Hydromatic Simulator model.
-"""
+    "Configure a 65-bit Hydromatic Actuator and predict its deformation."
 )
 
 
@@ -972,150 +643,50 @@ hydrogel actuator using the trained Hydromatic Simulator model.
 
 with st.sidebar:
 
-    st.header("Design")
-
-    st.markdown(
-        f"""
-**Structure length:** {S} mm
-
-**Number of predicted nodes:** {NUM_COORD}
-
-**Predicted time points:** {NUM_TIMESTEPS}
-"""
-    )
-
-    st.divider()
+    st.header("Design Editor")
 
     draw_ahc_patterns()
 
-    st.caption(
-        "The design editor supports up to three AHC structures "
-        "with a minimum 5 mm separation."
+    st.markdown("---")
+
+    st.selectbox(
+        "AHC structure",
+        list(AHC_PATTERNS.keys()),
+        key="selected_ahc",
     )
 
-
-# ============================================================
-# DESIGN EDITOR
-# ============================================================
-
-st.header(
-    "1. Configure the actuator"
-)
-
-st.markdown(
-    """
-Place two or three AHC structures along the
-65-mm Hydromatic actuator.
-"""
-)
-
-draw_design()
-
-
-# ============================================================
-# PLACEMENT CONTROLS
-# ============================================================
-
-col1, col2 = st.columns(2)
-
-
-with col1:
-
-    ahc_name = st.selectbox(
-        "Structure type",
-        list(
-            AHC_PATTERNS.keys()
-        ),
-    )
-
-
-with col2:
-
-    max_start = (
-        S
-        - len(
-            AHC_PATTERNS[
-                ahc_name
-            ]
-        )
-    )
-
-    start = st.number_input(
+    st.number_input(
         "Starting position (mm)",
         min_value=0,
-        max_value=max_start,
+        max_value=S - 1,
         value=0,
         step=1,
+        key="start_position",
     )
 
-
-if st.button(
-    "Place structure",
-    type="secondary",
-):
-
-    success, message = place_block(
-        ahc_name,
-        int(start),
+    st.button(
+        "Place structure",
+        on_click=place_block,
+        use_container_width=True,
     )
 
-    if success:
+    st.button(
+        "Reset",
+        on_click=reset_design,
+        use_container_width=True,
+    )
 
-        st.success(
-            f"{ahc_name} placed at "
-            f"{start} mm."
-        )
+    st.markdown("---")
 
-        st.rerun()
+    if st.session_state.placed_blocks:
 
-    else:
+        st.markdown("### Placed structures")
 
-        st.error(
-            message
-        )
-
-
-# ============================================================
-# DESIGN CONTROLS
-# ============================================================
-
-col1, col2 = st.columns(2)
-
-
-with col1:
-
-    if st.button(
-        "Reset design"
-    ):
-
-        reset_editor()
-
-        st.rerun()
-
-
-with col2:
-
-    if st.button(
-        "Print Code"
-    ):
-
-        if len(
-            st.session_state.placed_blocks
-        ) <= 1:
-
-            st.error(
-                "Double/triple structure requires "
-                "at least two AHC structures."
-            )
-
-        else:
-
-            st.success(
-                "Last valid actuator design:"
-            )
-
-            st.code(
-                binary_code()
+        for block in st.session_state.placed_blocks:
+            st.write(
+                f"{block['type']} — "
+                f"position {block['start']}–"
+                f"{block['start'] + len(block['pattern'])} mm"
             )
 
 
@@ -1123,63 +694,55 @@ with col2:
 # CURRENT DESIGN
 # ============================================================
 
-st.markdown(
-    "### Current 65-bit design"
-)
+st.subheader("Current 65-bit design")
 
 draw_design()
+
+st.markdown("")
 
 current_code = binary_code()
 
 st.code(
-    current_code
+    current_code,
+    language="text",
 )
 
 
 # ============================================================
-# ADVANCED BINARY INPUT
+# ADVANCED MANUAL CODE
 # ============================================================
 
 with st.expander(
     "Advanced: enter a 65-bit binary code"
 ):
 
+    st.write("65-bit binary code")
+
     manual_code = st.text_input(
         "65-bit binary code",
         value=current_code,
-        max_chars=S,
+        label_visibility="collapsed",
     )
 
-    if st.button(
-        "Use manual code"
-    ):
+    if st.button("Use manual code"):
 
-        valid, message = (
-            validate_binary_code(
-                manual_code
-            )
+        valid, message = validate_binary_code(
+            manual_code
         )
 
         if not valid:
-
-            st.error(
-                message
-            )
+            st.error(message)
 
         else:
-
             st.session_state.block_values = [
                 int(x)
                 for x in manual_code
             ]
 
-            # Manual input represents a valid design,
-            # but the exact AHC block history is unknown.
             st.session_state.placed_blocks = []
 
-            st.success(
-                "Manual design accepted."
-            )
+            st.session_state.prediction = None
+            st.session_state.prediction_code = None
 
             st.rerun()
 
@@ -1188,154 +751,98 @@ with st.expander(
 # PREDICTION
 # ============================================================
 
-st.header(
-    "2. Predict deformation"
+st.markdown("---")
+
+valid_code, validation_message = validate_binary_code(
+    current_code
 )
 
-
-valid, message = (
-    validate_binary_code(
-        current_code
-    )
+predict_disabled = (
+    not valid_code
+    or len(st.session_state.placed_blocks) < 2
 )
 
-
-if len(
-    st.session_state.placed_blocks
-) < 2:
-
+if len(st.session_state.placed_blocks) < 2:
     st.info(
-        "Place at least two AHC structures "
-        "before running the prediction."
+        "Place at least 2 AHC structures before prediction."
     )
-
-    valid = False
-
-
-if not valid:
-
-    st.warning(
-        message
-        if message
-        else
-        "A valid actuator design is required."
-    )
-
 
 if st.button(
-    "Run prediction",
+    "Predict",
     type="primary",
-    disabled=not valid,
+    disabled=predict_disabled,
+    use_container_width=True,
 ):
 
     with st.spinner(
-        "Running the trained Hydromatic Simulator..."
+        "Loading models and generating prediction..."
     ):
 
-        try:
+        models = load_models()
 
-            models = load_web_models()
+        prediction = run_inference(
+            models,
+            current_code,
+        )
 
-            prediction = run_web_inference(
-                models,
-                current_code,
-            )
-
-            st.session_state.prediction = (
-                prediction
-            )
-
-            st.session_state.prediction_code = (
-                current_code
-            )
-
-            st.success(
-                "Prediction completed."
-            )
-
-        except Exception as e:
-
-            st.error(
-                "The prediction could not be completed."
-            )
-
-            st.exception(e)
+        st.session_state.prediction = prediction
+        st.session_state.prediction_code = current_code
 
 
 # ============================================================
-# RESULTS
+# PREDICTION RESULTS
 # ============================================================
 
-if (
-    st.session_state.prediction
-    is not None
-):
+if st.session_state.prediction is not None:
 
-    prediction = (
+    st.markdown("---")
+
+    st.subheader("Predicted deformation")
+
+    fig = make_prediction_figure(
         st.session_state.prediction
     )
 
-    st.header(
-        "3. Predicted deformation"
-    )
-
     st.plotly_chart(
-        create_animation(
-            prediction
-        ),
+        fig,
         use_container_width=True,
     )
 
-    st.caption(
-        "The animation follows the original model "
-        "visualization: 0 min at 50°C (as-prepared), "
-        "followed by the predicted 20°C deformation "
-        "sequence through equilibrium."
-    )
-
     # --------------------------------------------------------
-    # DATA TABLE
+    # Numerical results
     # --------------------------------------------------------
 
-    st.subheader(
-        "Predicted nodal coordinates"
-    )
+    prediction = st.session_state.prediction
 
-    df = prediction_dataframe(
-        prediction
-    )
+    rows = []
+
+    for t in range(NUM_TIMESTEPS):
+
+        for node in range(NUM_COORD):
+
+            rows.append(
+                {
+                    "Time": config["timesteps"][t],
+                    "Node": node + 1,
+                    "X": prediction[node, t, 0],
+                    "Y": prediction[node, t, 1],
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    st.subheader("Prediction data")
 
     st.dataframe(
         df,
         use_container_width=True,
-        hide_index=True,
     )
 
-    # --------------------------------------------------------
-    # CSV DOWNLOAD
-    # --------------------------------------------------------
-
-    csv_data = (
-        df
-        .to_csv(index=False)
-        .encode("utf-8")
-    )
+    csv = df.to_csv(index=False)
 
     st.download_button(
-        label="Download prediction as CSV",
-        data=csv_data,
+        "Download prediction CSV",
+        data=csv,
         file_name="hydromatic_prediction.csv",
         mime="text/csv",
-    )
-
-    # --------------------------------------------------------
-    # INPUT DESIGN
-    # --------------------------------------------------------
-
-    st.subheader(
-        "Input design"
-    )
-
-    st.code(
-        st.session_state.prediction_code
     )
