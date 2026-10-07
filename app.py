@@ -418,24 +418,115 @@ def draw_design():
 # PLOTLY PREDICTION GRAPH
 # ============================================================
 
+# ============================================================
+# PLOTLY PREDICTION GRAPH
+# ============================================================
+
 def make_prediction_figure(pred_sequence):
 
     # --------------------------------------------------------
     # Visualization parameter
-    #
-    # The trained model predicts the centerline coordinates,
-    # not the physical actuator thickness.
-    #
-    # Therefore this is ONLY a visualization width.
-    # It is not a predicted material thickness.
     # --------------------------------------------------------
 
     CONTOUR_HALF_WIDTH = 2.0
 
-    frames = []
+    # Number of points used ONLY for visualization
+    SMOOTH_POINTS = 200
 
     # --------------------------------------------------------
-    # Helper: create a contour around a centerline
+    # Helper: smooth centerline
+    # --------------------------------------------------------
+
+    def smooth_curve(x, y):
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        # Remove duplicate consecutive points
+        dx = np.diff(x)
+        dy = np.diff(y)
+
+        distance = np.sqrt(
+            dx**2 + dy**2
+        )
+
+        keep = np.concatenate(
+            [
+                [True],
+                distance > 1e-8,
+            ]
+        )
+
+        x = x[keep]
+        y = y[keep]
+
+        # If too few points exist, return original data
+        if len(x) < 3:
+            return x, y
+
+        # Arc-length parameterization
+        ds = np.sqrt(
+            np.diff(x)**2 +
+            np.diff(y)**2
+        )
+
+        s = np.concatenate(
+            [
+                [0.0],
+                np.cumsum(ds),
+            ]
+        )
+
+        if s[-1] <= 1e-8:
+            return x, y
+
+        s_new = np.linspace(
+            0,
+            s[-1],
+            SMOOTH_POINTS,
+        )
+
+        # Try cubic spline interpolation
+        try:
+
+            from scipy.interpolate import CubicSpline
+
+            x_spline = CubicSpline(
+                s,
+                x,
+                bc_type="natural",
+            )
+
+            y_spline = CubicSpline(
+                s,
+                y,
+                bc_type="natural",
+            )
+
+            x_new = x_spline(s_new)
+            y_new = y_spline(s_new)
+
+            return x_new, y_new
+
+        except Exception:
+
+            # Fallback to linear interpolation
+            x_new = np.interp(
+                s_new,
+                s,
+                x,
+            )
+
+            y_new = np.interp(
+                s_new,
+                s,
+                y,
+            )
+
+            return x_new, y_new
+
+    # --------------------------------------------------------
+    # Helper: create contour around smoothed centerline
     # --------------------------------------------------------
 
     def make_contour(x, y, half_width):
@@ -443,30 +534,24 @@ def make_prediction_figure(pred_sequence):
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
 
-        # Calculate local tangent
         dx = np.gradient(x)
         dy = np.gradient(y)
 
-        # Tangent magnitude
         magnitude = np.sqrt(
             dx**2 + dy**2
         )
 
-        # Avoid division by zero
         magnitude[magnitude == 0] = 1.0
 
-        # Unit normal
         nx = -dy / magnitude
         ny = dx / magnitude
 
-        # Offset on both sides of centerline
         x_upper = x + half_width * nx
         y_upper = y + half_width * ny
 
         x_lower = x - half_width * nx
         y_lower = y - half_width * ny
 
-        # Close contour
         contour_x = np.concatenate(
             [
                 x_upper,
@@ -505,10 +590,15 @@ def make_prediction_figure(pred_sequence):
         [[0.0], initial_y]
     )
 
-    # Initial contour
-    initial_contour_x, initial_contour_y = make_contour(
+    # Smooth initial centerline
+    smooth_initial_x, smooth_initial_y = smooth_curve(
         initial_x,
         initial_y,
+    )
+
+    initial_contour_x, initial_contour_y = make_contour(
+        smooth_initial_x,
+        smooth_initial_y,
         CONTOUR_HALF_WIDTH,
     )
 
@@ -517,7 +607,7 @@ def make_prediction_figure(pred_sequence):
     # --------------------------------------------------------
 
     initial_data = [
-        # Contour
+
         go.Scatter(
             x=initial_contour_x,
             y=initial_contour_y,
@@ -525,32 +615,30 @@ def make_prediction_figure(pred_sequence):
             fill="toself",
             line=dict(
                 width=1.5,
+                shape="spline",
             ),
             name="Contour",
             hoverinfo="skip",
         ),
 
-        # Centerline
         go.Scatter(
-            x=initial_x,
-            y=initial_y,
-            mode="lines+markers",
+            x=smooth_initial_x,
+            y=smooth_initial_y,
+            mode="lines",
             line=dict(
                 width=3,
-            ),
-            marker=dict(
-                size=5,
+                shape="spline",
             ),
             name="Centerline",
         ),
     ]
 
-    frames.append(
+    frames = [
         go.Frame(
             name="0 min",
             data=initial_data,
         )
-    )
+    ]
 
     # --------------------------------------------------------
     # Predicted frames
@@ -572,16 +660,22 @@ def make_prediction_figure(pred_sequence):
             ]
         )
 
-        contour_x, contour_y = make_contour(
+        # Smooth ONLY for visualization
+        smooth_x, smooth_y = smooth_curve(
             x,
             y,
+        )
+
+        contour_x, contour_y = make_contour(
+            smooth_x,
+            smooth_y,
             CONTOUR_HALF_WIDTH,
         )
 
         frame_data = [
 
             # ------------------------------------------------
-            # Deformed contour
+            # Smooth contour
             # ------------------------------------------------
 
             go.Scatter(
@@ -591,24 +685,23 @@ def make_prediction_figure(pred_sequence):
                 fill="toself",
                 line=dict(
                     width=1.5,
+                    shape="spline",
                 ),
                 name="Contour",
                 hoverinfo="skip",
             ),
 
             # ------------------------------------------------
-            # Deformed centerline
+            # Smooth centerline
             # ------------------------------------------------
 
             go.Scatter(
-                x=x,
-                y=y,
-                mode="lines+markers",
+                x=smooth_x,
+                y=smooth_y,
+                mode="lines",
                 line=dict(
                     width=3,
-                ),
-                marker=dict(
-                    size=5,
+                    shape="spline",
                 ),
                 name="Centerline",
             ),
@@ -629,10 +722,6 @@ def make_prediction_figure(pred_sequence):
         data=initial_data,
         frames=frames,
     )
-
-    # --------------------------------------------------------
-    # Layout
-    # --------------------------------------------------------
 
     fig.update_layout(
 
@@ -658,10 +747,6 @@ def make_prediction_figure(pred_sequence):
             t=50,
             b=50,
         ),
-
-        # ----------------------------------------------------
-        # Animation buttons
-        # ----------------------------------------------------
 
         updatemenus=[
             {
@@ -707,10 +792,6 @@ def make_prediction_figure(pred_sequence):
                 ],
             }
         ],
-
-        # ----------------------------------------------------
-        # Time slider
-        # ----------------------------------------------------
 
         sliders=[
             {
