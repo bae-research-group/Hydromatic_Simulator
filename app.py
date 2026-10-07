@@ -414,11 +414,81 @@ def draw_design():
 # PLOTLY PREDICTION GRAPH
 # ============================================================
 
+# ============================================================
+# PLOTLY PREDICTION GRAPH
+# ============================================================
+
 def make_prediction_figure(pred_sequence):
+
+    # --------------------------------------------------------
+    # Visualization parameter
+    #
+    # The trained model predicts the centerline coordinates,
+    # not the physical actuator thickness.
+    #
+    # Therefore this is ONLY a visualization width.
+    # It is not a predicted material thickness.
+    # --------------------------------------------------------
+
+    CONTOUR_HALF_WIDTH = 2.0
 
     frames = []
 
+    # --------------------------------------------------------
+    # Helper: create a contour around a centerline
+    # --------------------------------------------------------
+
+    def make_contour(x, y, half_width):
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        # Calculate local tangent
+        dx = np.gradient(x)
+        dy = np.gradient(y)
+
+        # Tangent magnitude
+        magnitude = np.sqrt(
+            dx**2 + dy**2
+        )
+
+        # Avoid division by zero
+        magnitude[magnitude == 0] = 1.0
+
+        # Unit normal
+        nx = -dy / magnitude
+        ny = dx / magnitude
+
+        # Offset on both sides of centerline
+        x_upper = x + half_width * nx
+        y_upper = y + half_width * ny
+
+        x_lower = x - half_width * nx
+        y_lower = y - half_width * ny
+
+        # Close contour
+        contour_x = np.concatenate(
+            [
+                x_upper,
+                x_lower[::-1],
+                [x_upper[0]],
+            ]
+        )
+
+        contour_y = np.concatenate(
+            [
+                y_upper,
+                y_lower[::-1],
+                [y_upper[0]],
+            ]
+        )
+
+        return contour_x, contour_y
+
+    # --------------------------------------------------------
     # Initial coordinates
+    # --------------------------------------------------------
+
     initial_x = np.linspace(
         4.0625,
         65.0,
@@ -427,26 +497,58 @@ def make_prediction_figure(pred_sequence):
 
     initial_y = np.zeros(NUM_COORD)
 
+    initial_x = np.concatenate(
+        [[0.0], initial_x]
+    )
+
+    initial_y = np.concatenate(
+        [[0.0], initial_y]
+    )
+
+    # Initial contour
+    initial_contour_x, initial_contour_y = make_contour(
+        initial_x,
+        initial_y,
+        CONTOUR_HALF_WIDTH,
+    )
+
     # --------------------------------------------------------
     # Initial frame
     # --------------------------------------------------------
 
+    initial_data = [
+        # Contour
+        go.Scatter(
+            x=initial_contour_x,
+            y=initial_contour_y,
+            mode="lines",
+            fill="toself",
+            line=dict(
+                width=1.5,
+            ),
+            name="Contour",
+            hoverinfo="skip",
+        ),
+
+        # Centerline
+        go.Scatter(
+            x=initial_x,
+            y=initial_y,
+            mode="lines+markers",
+            line=dict(
+                width=3,
+            ),
+            marker=dict(
+                size=5,
+            ),
+            name="Centerline",
+        ),
+    ]
+
     frames.append(
         go.Frame(
             name="0 min",
-            data=[
-                go.Scatter(
-                    x=np.concatenate([[0.0], initial_x]),
-                    y=np.concatenate([[0.0], initial_y]),
-                    mode="lines+markers",
-                    line=dict(
-                        width=4,
-                    ),
-                    marker=dict(
-                        size=5,
-                    ),
-                )
-            ],
+            data=initial_data,
         )
     )
 
@@ -470,49 +572,76 @@ def make_prediction_figure(pred_sequence):
             ]
         )
 
-        frames.append(
-            go.Frame(
-                name=TIMESTEPS[t + 1],
-                data=[
-                    go.Scatter(
-                        x=x,
-                        y=y,
-                        mode="lines+markers",
-                        line=dict(
-                            width=4,
-                        ),
-                        marker=dict(
-                            size=5,
-                        ),
-                    )
-                ],
-            )
+        contour_x, contour_y = make_contour(
+            x,
+            y,
+            CONTOUR_HALF_WIDTH,
         )
 
-    # Initial graph
-    fig = go.Figure(
-        data=[
+        frame_data = [
+
+            # ------------------------------------------------
+            # Deformed contour
+            # ------------------------------------------------
+
             go.Scatter(
-                x=np.concatenate([[0.0], initial_x]),
-                y=np.concatenate([[0.0], initial_y]),
+                x=contour_x,
+                y=contour_y,
+                mode="lines",
+                fill="toself",
+                line=dict(
+                    width=1.5,
+                ),
+                name="Contour",
+                hoverinfo="skip",
+            ),
+
+            # ------------------------------------------------
+            # Deformed centerline
+            # ------------------------------------------------
+
+            go.Scatter(
+                x=x,
+                y=y,
                 mode="lines+markers",
                 line=dict(
-                    width=4,
+                    width=3,
                 ),
                 marker=dict(
                     size=5,
                 ),
+                name="Centerline",
+            ),
+        ]
+
+        frames.append(
+            go.Frame(
+                name=TIMESTEPS[t + 1],
+                data=frame_data,
             )
-        ],
+        )
+
+    # --------------------------------------------------------
+    # Figure
+    # --------------------------------------------------------
+
+    fig = go.Figure(
+        data=initial_data,
         frames=frames,
     )
 
+    # --------------------------------------------------------
+    # Layout
+    # --------------------------------------------------------
+
     fig.update_layout(
+
         xaxis=dict(
             range=[-70, 80],
             title="X position",
             zeroline=True,
         ),
+
         yaxis=dict(
             range=[-90, 60],
             title="Y position",
@@ -520,20 +649,29 @@ def make_prediction_figure(pred_sequence):
             scaleanchor="x",
             scaleratio=1,
         ),
+
         height=650,
+
         margin=dict(
             l=50,
             r=30,
             t=50,
             b=50,
         ),
+
+        # ----------------------------------------------------
+        # Animation buttons
+        # ----------------------------------------------------
+
         updatemenus=[
             {
                 "type": "buttons",
                 "showactive": False,
                 "x": 0.1,
                 "y": 1.15,
+
                 "buttons": [
+
                     {
                         "label": "▶ Start Deformation",
                         "method": "animate",
@@ -551,6 +689,7 @@ def make_prediction_figure(pred_sequence):
                             },
                         ],
                     },
+
                     {
                         "label": "⏸ Stop Deformation",
                         "method": "animate",
@@ -568,13 +707,20 @@ def make_prediction_figure(pred_sequence):
                 ],
             }
         ],
+
+        # ----------------------------------------------------
+        # Time slider
+        # ----------------------------------------------------
+
         sliders=[
             {
                 "active": 0,
                 "x": 0.1,
                 "y": 0,
                 "len": 0.85,
+
                 "steps": [
+
                     {
                         "label": TIMESTEPS[i],
                         "method": "animate",
@@ -592,6 +738,7 @@ def make_prediction_figure(pred_sequence):
                             },
                         ],
                     }
+
                     for i in range(len(TIMESTEPS))
                 ],
             }
