@@ -76,6 +76,10 @@ def load_models():
 # INFERENCE
 # ============================================================
 
+# ============================================================
+# INFERENCE
+# ============================================================
+
 def run_inference(models, binary_code):
 
     design = np.array(
@@ -95,25 +99,35 @@ def run_inference(models, binary_code):
     )
 
     init_pos = tf.convert_to_tensor(
-        init_pos.reshape(1, NUM_COORD, 2),
+        init_pos,
         dtype=tf.float32,
     )
 
     predictions = []
 
-    for model in models:
+    # Each of the 16 trained models corresponds to
+    # one initial nodal position.
+    for i, model in enumerate(models):
+
+        # Shape: (1, 2)
+        # This matches the original model's predict_step(),
+        # which uses batch_nodal_true[:, 0, :].
+        node_init_pos = init_pos[i].reshape(1, 2)
 
         pred = model.recursive_generate(
             design,
-            init_pos,
+            node_init_pos,
             training=False,
         )
 
         pred = pred.numpy()
 
-        predictions.append(pred)
+        predictions.append(pred[0])
 
-    predictions = np.stack(predictions, axis=0)
+    predictions = np.stack(
+        predictions,
+        axis=0,
+    )
 
     # Expected shape:
     # (16, 9, 2)
