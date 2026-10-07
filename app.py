@@ -5,7 +5,7 @@ import streamlit as st
 import tensorflow as tf
 import plotly.graph_objects as go
 
-from Hydromatic_Simulator.model.model import GeneratorModel
+from Hydromatic_Simulator.model.main import load_trained_model
 from Hydromatic_Simulator.utils.config import config
 
 
