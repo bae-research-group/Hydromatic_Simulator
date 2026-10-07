@@ -16,7 +16,7 @@ from Hydromatic_Simulator.utils.config import config
 
 st.set_page_config(
     page_title="Hydromatic Simulator",
-    page_icon="",
+    page_icon="🁢",
     layout="wide",
 )
 
