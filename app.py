@@ -1,5 +1,5 @@
-import io
 import os
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ from Hydromatic_Simulator.utils.config import config
 
 st.set_page_config(
     page_title="Hydromatic Simulator",
-    page_icon="💧",
+    page_icon="🔵",
     layout="wide",
 )
 
@@ -66,7 +66,10 @@ def load_web_models():
 
         model = GeneratorModel()
 
-        # Build the model before loading the submodel weights.
+        # ----------------------------------------------------
+        # Build the model before loading weights.
+        # ----------------------------------------------------
+
         dummy_design = tf.zeros(
             (1, config["structure-dim"]),
             dtype=tf.float32,
@@ -83,6 +86,10 @@ def load_web_models():
             training=False,
         )
 
+        # ----------------------------------------------------
+        # Weight file paths
+        # ----------------------------------------------------
+
         encoder_path = os.path.join(
             weights_dir,
             f"encoder_{NUM_COORD}coords_{i}.weights.h5",
@@ -92,6 +99,10 @@ def load_web_models():
             weights_dir,
             f"decoder_{NUM_COORD}coords_{i}.weights.h5",
         )
+
+        # ----------------------------------------------------
+        # Verify weight files exist
+        # ----------------------------------------------------
 
         if not os.path.exists(encoder_path):
             raise FileNotFoundError(
@@ -103,8 +114,17 @@ def load_web_models():
                 f"Missing decoder weight file:\n{decoder_path}"
             )
 
-        model.encoder.load_weights(encoder_path)
-        model.decoder.load_weights(decoder_path)
+        # ----------------------------------------------------
+        # Load trained weights
+        # ----------------------------------------------------
+
+        model.encoder.load_weights(
+            encoder_path
+        )
+
+        model.decoder.load_weights(
+            decoder_path
+        )
 
         models.append(model)
 
@@ -119,10 +139,20 @@ def run_web_inference(models, binary_string):
     """
     Run the trained 16-coordinate generator models.
 
+    Parameters
+    ----------
+    models : list
+        List of 16 trained GeneratorModel objects.
+
+    binary_string : str
+        65-bit binary design.
+
     Returns
     -------
     prediction : np.ndarray
+
         Shape:
+
             (16, 9, 2)
 
         16 = predicted nodal coordinates
@@ -147,15 +177,27 @@ def run_web_inference(models, binary_string):
 
     for i, model in enumerate(models):
 
+        # ----------------------------------------------------
+        # Design input
+        # ----------------------------------------------------
+
         design_tensor = tf.convert_to_tensor(
             design_input[None, :],
             dtype=tf.float32,
         )
 
+        # ----------------------------------------------------
+        # Initial nodal position
+        # ----------------------------------------------------
+
         initial_position = tf.convert_to_tensor(
             initial_positions[i][None, :],
             dtype=tf.float32,
         )
+
+        # ----------------------------------------------------
+        # Generate deformation sequence
+        # ----------------------------------------------------
 
         prediction = model.recursive_generate(
             design_tensor,
@@ -165,12 +207,20 @@ def run_web_inference(models, binary_string):
 
         prediction = prediction.numpy()
 
-        # Expected shape: (1, 9, 2)
-        prediction = np.squeeze(prediction, axis=0)
+        # Expected shape:
+        # (1, 9, 2)
+
+        prediction = np.squeeze(
+            prediction,
+            axis=0,
+        )
 
         predictions.append(prediction)
 
-    return np.stack(predictions, axis=0)
+    return np.stack(
+        predictions,
+        axis=0,
+    )
 
 
 # ============================================================
@@ -178,23 +228,37 @@ def run_web_inference(models, binary_string):
 # ============================================================
 
 def validate_binary_code(binary_string):
+    """
+    Validate a 65-bit binary design.
+    """
+
     if len(binary_string) != S:
-        return False, f"Binary code must contain exactly {S} bits."
+        return (
+            False,
+            f"Binary code must contain exactly {S} bits.",
+        )
 
     if any(char not in "01" for char in binary_string):
-        return False, "Binary code may contain only 0 and 1."
+        return (
+            False,
+            "Binary code may contain only 0 and 1.",
+        )
 
     if set(binary_string) == {"0"}:
-        return False, "The design cannot be an all-zero structure."
+        return (
+            False,
+            "The design cannot be an all-zero structure.",
+        )
 
     return True, ""
 
 
 # ============================================================
-# DESIGN EDITOR
+# DESIGN EDITOR STATE
 # ============================================================
 
 def initialize_editor():
+
     if "block_values" not in st.session_state:
         st.session_state.block_values = [0] * S
 
@@ -203,42 +267,100 @@ def initialize_editor():
 
 
 def reset_editor():
+
     st.session_state.block_values = [0] * S
     st.session_state.placed_blocks = []
 
 
+# ============================================================
+# STRUCTURE PLACEMENT
+# ============================================================
+
 def can_place_block(start, pattern_length):
+    """
+    Check whether an AHC structure can be placed.
+
+    Constraints:
+    - Must remain inside 65-mm domain.
+    - Maximum of 3 structures.
+    - No overlap.
+    - Minimum 5-mm separation.
+    """
+
     end = start + pattern_length - 1
 
-    # Must remain within the 65 mm structure.
+    # --------------------------------------------------------
+    # Domain constraint
+    # --------------------------------------------------------
+
     if start < 0 or end >= S:
-        return False, "The structure would extend beyond the 65 mm domain."
+        return (
+            False,
+            "The structure would extend beyond the 65 mm domain.",
+        )
 
-    # Maximum of 3 structures.
+    # --------------------------------------------------------
+    # Maximum number of structures
+    # --------------------------------------------------------
+
     if len(st.session_state.placed_blocks) >= 3:
-        return False, "A maximum of three structures can be placed."
+        return (
+            False,
+            "A maximum of three structures can be placed.",
+        )
 
-    # Prevent overlap.
-    new_range = set(range(start, end + 1))
+    # --------------------------------------------------------
+    # Check overlap and minimum separation
+    # --------------------------------------------------------
+
+    new_range = set(
+        range(
+            start,
+            end + 1,
+        )
+    )
 
     for old_start, old_end, _ in st.session_state.placed_blocks:
 
-        old_range = set(range(old_start, old_end + 1))
+        old_range = set(
+            range(
+                old_start,
+                old_end + 1,
+            )
+        )
 
+        # Overlap
         if new_range.intersection(old_range):
-            return False, "The new structure overlaps an existing structure."
+            return (
+                False,
+                "The new structure overlaps an existing structure.",
+            )
 
-        # Minimum 5 mm gap.
-        if abs(start - old_end) < 5:
-            return False, "Structures must be separated by at least 5 mm."
+        # New structure is to the right of old structure
+        if start > old_end:
+            gap = start - old_end - 1
 
-        if abs(old_start - end) < 5:
-            return False, "Structures must be separated by at least 5 mm."
+            if gap < 5:
+                return (
+                    False,
+                    "Structures must be separated by at least 5 mm.",
+                )
+
+        # New structure is to the left of old structure
+        if end < old_start:
+            gap = old_start - end - 1
+
+            if gap < 5:
+                return (
+                    False,
+                    "Structures must be separated by at least 5 mm.",
+                )
 
     return True, ""
 
 
 def place_block(ahc_name, start):
+
     pattern = AHC_PATTERNS[ahc_name]
     value = AHC_VALUES[ahc_name]
 
@@ -252,38 +374,40 @@ def place_block(ahc_name, start):
 
     end = start + len(pattern) - 1
 
-    # Write pattern into 65-bit design.
+    # --------------------------------------------------------
+    # Write pattern into 65-position design
+    # --------------------------------------------------------
+
     for j, bit in enumerate(pattern):
+
         st.session_state.block_values[start + j] = (
             value if bit == "1" else 0
         )
 
     st.session_state.placed_blocks.append(
-        (start, end, value)
+        (
+            start,
+            end,
+            value,
+        )
     )
 
     return True, ""
 
 
+# ============================================================
+# DESIGN VISUALIZATION
+# ============================================================
+
 def draw_design():
     """
-    Display the current 65-position design as a colored grid.
+    Display the current 65-position design as a horizontal grid.
+
+    The HTML is explicitly dedented so Streamlit does not
+    interpret the HTML as a code block.
     """
 
     values = st.session_state.block_values
-
-    html = """
-    <div style="
-        width: 100%;
-        overflow-x: auto;
-        padding: 10px 0;
-    ">
-        <div style="
-            display: flex;
-            min-width: 780px;
-            border: 1px solid #888;
-        ">
-    """
 
     colors = {
         0: "#eeeeee",
@@ -292,25 +416,46 @@ def draw_design():
         3: "#00bfff",
     }
 
+    html = """
+    <div style="
+        width: 100%;
+        overflow-x: auto;
+        padding: 10px 0 45px 0;
+    ">
+        <div style="
+            display: flex;
+            min-width: 780px;
+            border: 1px solid #888888;
+            height: 35px;
+        ">
+    """
+
     for i, value in enumerate(values):
 
         html += f"""
-        <div title="{i} mm: {value}" style="
-            width: 12px;
-            height: 35px;
-            background: {colors[value]};
-            border-right: 1px solid #ffffff;
-            position: relative;
-        ">
+        <div
+            title="{i} mm: {value}"
+            style="
+                width: 12px;
+                height: 35px;
+                background: {colors[value]};
+                border-right: 1px solid #ffffff;
+                position: relative;
+                flex-shrink: 0;
+            "
+        >
         """
 
         if i % 5 == 0:
+
             html += f"""
             <span style="
                 position: absolute;
                 top: 38px;
                 left: -2px;
                 font-size: 9px;
+                color: #333333;
+                white-space: nowrap;
             ">
                 {i}
             </span>
@@ -323,10 +468,16 @@ def draw_design():
     </div>
     """
 
-    st.markdown(html, unsafe_allow_html=True)
+    html = textwrap.dedent(html)
+
+    st.markdown(
+        html,
+        unsafe_allow_html=True,
+    )
 
 
 def binary_code():
+
     return "".join(
         str(x)
         for x in st.session_state.block_values
@@ -339,11 +490,13 @@ def binary_code():
 
 def draw_contour(centerline, width=2.0):
     """
-    Reproduce the rectangular contour construction used by
-    the original visualization.py.
+    Construct an approximate actuator contour around the
+    predicted centerline.
     """
 
-    centerline = np.asarray(centerline)
+    centerline = np.asarray(
+        centerline
+    )
 
     x = centerline[:, 0]
     y = centerline[:, 1]
@@ -351,7 +504,9 @@ def draw_contour(centerline, width=2.0):
     dx = np.gradient(x)
     dy = np.gradient(y)
 
-    tangent_norm = np.sqrt(dx**2 + dy**2)
+    tangent_norm = np.sqrt(
+        dx**2 + dy**2
+    )
 
     tangent_norm[tangent_norm == 0] = 1.0
 
@@ -365,11 +520,17 @@ def draw_contour(centerline, width=2.0):
     y2 = y - ny * width / 2
 
     contour_x = np.concatenate(
-        [x1, x2[::-1]]
+        [
+            x1,
+            x2[::-1],
+        ]
     )
 
     contour_y = np.concatenate(
-        [y1, y2[::-1]]
+        [
+            y1,
+            y2[::-1],
+        ]
     )
 
     return contour_x, contour_y
@@ -386,6 +547,10 @@ def make_frame(prediction, timestep):
         predicted configuration
     """
 
+    # --------------------------------------------------------
+    # Initial configuration
+    # --------------------------------------------------------
+
     if timestep == 0:
 
         x = np.linspace(
@@ -398,20 +563,42 @@ def make_frame(prediction, timestep):
 
         centerline = np.column_stack(
             [
-                np.concatenate([[0.0], x]),
-                np.concatenate([[0.0], y]),
+                np.concatenate(
+                    [
+                        [0.0],
+                        x,
+                    ]
+                ),
+                np.concatenate(
+                    [
+                        [0.0],
+                        y,
+                    ]
+                ),
             ]
         )
 
         condition = "50°C (as-prepared)"
 
+    # --------------------------------------------------------
+    # Predicted configuration
+    # --------------------------------------------------------
+
     else:
 
-        xy = prediction[:, timestep - 1, :]
+        xy = prediction[
+            :,
+            timestep - 1,
+            :,
+        ]
 
         centerline = np.vstack(
             [
-                np.array([[0.0, 0.0]]),
+                np.array(
+                    [
+                        [0.0, 0.0]
+                    ]
+                ),
                 xy,
             ]
         )
@@ -426,10 +613,19 @@ def make_frame(prediction, timestep):
         width=2,
     )
 
-    return centerline, contour_x, contour_y, condition
+    return (
+        centerline,
+        contour_x,
+        contour_y,
+        condition,
+    )
 
 
 def create_animation(prediction):
+
+    # --------------------------------------------------------
+    # Initial frame
+    # --------------------------------------------------------
 
     centerline, contour_x, contour_y, condition = make_frame(
         prediction,
@@ -438,19 +634,29 @@ def create_animation(prediction):
 
     fig = go.Figure()
 
+    # --------------------------------------------------------
     # Centerline
+    # --------------------------------------------------------
+
     fig.add_trace(
         go.Scatter(
             x=centerline[:, 0],
             y=centerline[:, 1],
             mode="lines+markers",
-            line=dict(width=3),
-            marker=dict(size=6),
+            line=dict(
+                width=3
+            ),
+            marker=dict(
+                size=6
+            ),
             name="Predicted centerline",
         )
     )
 
-    # Contour
+    # --------------------------------------------------------
+    # Actuator contour
+    # --------------------------------------------------------
+
     fig.add_trace(
         go.Scatter(
             x=contour_x,
@@ -461,9 +667,15 @@ def create_animation(prediction):
         )
     )
 
+    # --------------------------------------------------------
+    # Animation frames
+    # --------------------------------------------------------
+
     frames = []
 
-    for t in range(NUM_TIMESTEPS + 1):
+    for t in range(
+        NUM_TIMESTEPS + 1
+    ):
 
         centerline, contour_x, contour_y, condition = make_frame(
             prediction,
@@ -478,8 +690,12 @@ def create_animation(prediction):
                         x=centerline[:, 0],
                         y=centerline[:, 1],
                         mode="lines+markers",
-                        line=dict(width=3),
-                        marker=dict(size=6),
+                        line=dict(
+                            width=3
+                        ),
+                        marker=dict(
+                            size=6
+                        ),
                     ),
                     go.Scatter(
                         x=contour_x,
@@ -493,29 +709,49 @@ def create_animation(prediction):
 
     fig.frames = frames
 
+    # --------------------------------------------------------
+    # Layout
+    # --------------------------------------------------------
+
     fig.update_layout(
+
         title=dict(
-            text=f"Deformation: {TIMESTEPS[0]} — {condition}",
+            text="Deformation: 0 min — 50°C (as-prepared)",
         ),
+
         xaxis=dict(
             title="x (mm)",
-            range=[-70, 80],
+            range=[
+                -70,
+                80,
+            ],
             zeroline=True,
             scaleanchor="y",
             scaleratio=1,
         ),
+
         yaxis=dict(
             title="y (mm)",
-            range=[-90, 60],
+            range=[
+                -90,
+                60,
+            ],
             zeroline=True,
         ),
+
         height=650,
+
         margin=dict(
             l=50,
             r=30,
-            t=80,
+            t=100,
             b=50,
         ),
+
+        # ----------------------------------------------------
+        # Play / Pause controls
+        # ----------------------------------------------------
+
         updatemenus=[
             {
                 "type": "buttons",
@@ -523,6 +759,7 @@ def create_animation(prediction):
                 "x": 0.05,
                 "y": 1.12,
                 "buttons": [
+
                     {
                         "label": "▶ Play",
                         "method": "animate",
@@ -540,6 +777,7 @@ def create_animation(prediction):
                             },
                         ],
                     },
+
                     {
                         "label": "⏸ Pause",
                         "method": "animate",
@@ -557,13 +795,20 @@ def create_animation(prediction):
                 ],
             }
         ],
+
+        # ----------------------------------------------------
+        # Time slider
+        # ----------------------------------------------------
+
         sliders=[
             {
                 "active": 0,
                 "x": 0.15,
                 "y": 1.05,
                 "len": 0.75,
+
                 "steps": [
+
                     {
                         "label": TIMESTEPS[t],
                         "method": "animate",
@@ -580,7 +825,10 @@ def create_animation(prediction):
                             },
                         ],
                     }
-                    for t in range(NUM_TIMESTEPS + 1)
+
+                    for t in range(
+                        NUM_TIMESTEPS + 1
+                    )
                 ],
             }
         ],
@@ -597,16 +845,28 @@ def prediction_dataframe(prediction):
 
     rows = []
 
-    for node in range(NUM_COORD):
+    for node in range(
+        NUM_COORD
+    ):
 
-        for t in range(NUM_TIMESTEPS):
+        for t in range(
+            NUM_TIMESTEPS
+        ):
 
             rows.append(
                 {
                     "node": node + 1,
                     "time": config["timesteps"][t],
-                    "x_mm": prediction[node, t, 0],
-                    "y_mm": prediction[node, t, 1],
+                    "x_mm": prediction[
+                        node,
+                        t,
+                        0,
+                    ],
+                    "y_mm": prediction[
+                        node,
+                        t,
+                        1,
+                    ],
                 }
             )
 
@@ -619,7 +879,14 @@ def prediction_dataframe(prediction):
 
 initialize_editor()
 
-st.title("💧 Hydromatic Simulator")
+
+# ============================================================
+# TITLE
+# ============================================================
+
+st.title(
+    "🔵 Hydromatic Simulator"
+)
 
 st.markdown(
     """
@@ -628,9 +895,10 @@ hydrogel actuator using the trained Hydromatic Simulator model.
 """
 )
 
-# ------------------------------------------------------------
+
+# ============================================================
 # SIDEBAR
-# ------------------------------------------------------------
+# ============================================================
 
 with st.sidebar:
 
@@ -638,21 +906,25 @@ with st.sidebar:
 
     st.markdown(
         f"""
-        **Structure length:** {S} mm
+**Structure length:** {S} mm
 
-        **Number of predicted nodes:** {NUM_COORD}
+**Number of predicted nodes:** {NUM_COORD}
 
-        **Predicted time points:** {NUM_TIMESTEPS}
-        """
+**Predicted time points:** {NUM_TIMESTEPS}
+"""
     )
 
     st.divider()
 
-    st.subheader("AHC structures")
+    st.subheader(
+        "AHC structures"
+    )
 
     for name, pattern in AHC_PATTERNS.items():
 
-        st.code(pattern)
+        st.code(
+            pattern
+        )
 
     st.caption(
         "The design editor supports up to three AHC structures "
@@ -660,26 +932,48 @@ with st.sidebar:
     )
 
 
-# ------------------------------------------------------------
+# ============================================================
 # DESIGN EDITOR
-# ------------------------------------------------------------
+# ============================================================
 
-st.header("1. Configure the actuator")
+st.header(
+    "1. Configure the actuator"
+)
 
 draw_design()
 
+
 col1, col2 = st.columns(2)
+
+
+# ------------------------------------------------------------
+# Structure selection
+# ------------------------------------------------------------
 
 with col1:
 
     ahc_name = st.selectbox(
         "Structure type",
-        list(AHC_PATTERNS.keys()),
+        list(
+            AHC_PATTERNS.keys()
+        ),
     )
+
+
+# ------------------------------------------------------------
+# Starting position
+# ------------------------------------------------------------
 
 with col2:
 
-    max_start = S - len(AHC_PATTERNS[ahc_name])
+    max_start = (
+        S
+        - len(
+            AHC_PATTERNS[
+                ahc_name
+            ]
+        )
+    )
 
     start = st.number_input(
         "Starting position (mm)",
@@ -688,6 +982,11 @@ with col2:
         value=0,
         step=1,
     )
+
+
+# ------------------------------------------------------------
+# Place structure
+# ------------------------------------------------------------
 
 if st.button(
     "Place structure",
@@ -700,45 +999,72 @@ if st.button(
     )
 
     if success:
+
         st.success(
             f"{ahc_name} placed at {start} mm."
         )
+
         st.rerun()
 
     else:
-        st.error(message)
 
+        st.error(
+            message
+        )
+
+
+# ============================================================
+# RESET / BINARY CODE
+# ============================================================
 
 col1, col2 = st.columns(2)
 
+
 with col1:
 
-    if st.button("Reset design"):
+    if st.button(
+        "Reset design"
+    ):
 
         reset_editor()
         st.rerun()
 
+
 with col2:
 
-    if st.button("Print binary code"):
+    if st.button(
+        "Print binary code"
+    ):
 
-        st.code(binary_code())
+        st.code(
+            binary_code()
+        )
 
 
-st.markdown("### Current 65-bit design")
+# ============================================================
+# CURRENT DESIGN
+# ============================================================
+
+st.markdown(
+    "### Current 65-bit design"
+)
 
 draw_design()
 
 current_code = binary_code()
 
-st.code(current_code)
+st.code(
+    current_code
+)
 
 
-# ------------------------------------------------------------
-# ADVANCED INPUT
-# ------------------------------------------------------------
+# ============================================================
+# ADVANCED MANUAL INPUT
+# ============================================================
 
-with st.expander("Advanced: enter a 65-bit binary code"):
+with st.expander(
+    "Advanced: enter a 65-bit binary code"
+):
 
     manual_code = st.text_input(
         "65-bit binary code",
@@ -746,14 +1072,19 @@ with st.expander("Advanced: enter a 65-bit binary code"):
         max_chars=S,
     )
 
-    if st.button("Use manual code"):
+    if st.button(
+        "Use manual code"
+    ):
 
         valid, message = validate_binary_code(
             manual_code
         )
 
         if not valid:
-            st.error(message)
+
+            st.error(
+                message
+            )
 
         else:
 
@@ -762,22 +1093,36 @@ with st.expander("Advanced: enter a 65-bit binary code"):
                 for x in manual_code
             ]
 
-            st.success("Manual design accepted.")
+            # Clear placed-block metadata because
+            # manual input may not correspond to the
+            # structures placed through the editor.
+            st.session_state.placed_blocks = []
+
+            st.success(
+                "Manual design accepted."
+            )
+
             st.rerun()
 
 
-# ------------------------------------------------------------
+# ============================================================
 # PREDICTION
-# ------------------------------------------------------------
+# ============================================================
 
-st.header("2. Predict deformation")
+st.header(
+    "2. Predict deformation"
+)
 
 valid, message = validate_binary_code(
     current_code
 )
 
 if not valid:
-    st.warning(message)
+
+    st.warning(
+        message
+    )
+
 
 if st.button(
     "Run prediction",
@@ -799,7 +1144,10 @@ if st.button(
             )
 
             st.session_state.prediction = prediction
-            st.session_state.prediction_code = current_code
+
+            st.session_state.prediction_code = (
+                current_code
+            )
 
         except Exception as e:
 
@@ -807,21 +1155,33 @@ if st.button(
                 "The prediction could not be completed."
             )
 
-            st.exception(e)
+            st.exception(
+                e
+            )
 
 
-# ------------------------------------------------------------
+# ============================================================
 # RESULTS
-# ------------------------------------------------------------
+# ============================================================
 
 if "prediction" in st.session_state:
 
-    prediction = st.session_state.prediction
+    prediction = (
+        st.session_state.prediction
+    )
 
-    st.header("3. Predicted deformation")
+    st.header(
+        "3. Predicted deformation"
+    )
+
+    # --------------------------------------------------------
+    # Plotly animation
+    # --------------------------------------------------------
 
     st.plotly_chart(
-        create_animation(prediction),
+        create_animation(
+            prediction
+        ),
         use_container_width=True,
     )
 
@@ -831,9 +1191,17 @@ if "prediction" in st.session_state:
         "sequence through equilibrium."
     )
 
-    st.subheader("Predicted nodal coordinates")
+    # --------------------------------------------------------
+    # Numerical results
+    # --------------------------------------------------------
 
-    df = prediction_dataframe(prediction)
+    st.subheader(
+        "Predicted nodal coordinates"
+    )
+
+    df = prediction_dataframe(
+        prediction
+    )
 
     st.dataframe(
         df,
@@ -841,7 +1209,13 @@ if "prediction" in st.session_state:
         hide_index=True,
     )
 
-    csv_data = df.to_csv(index=False).encode(
+    # --------------------------------------------------------
+    # CSV download
+    # --------------------------------------------------------
+
+    csv_data = df.to_csv(
+        index=False
+    ).encode(
         "utf-8"
     )
 
@@ -852,7 +1226,13 @@ if "prediction" in st.session_state:
         mime="text/csv",
     )
 
-    st.subheader("Input design")
+    # --------------------------------------------------------
+    # Input design
+    # --------------------------------------------------------
+
+    st.subheader(
+        "Input design"
+    )
 
     st.code(
         st.session_state.prediction_code
