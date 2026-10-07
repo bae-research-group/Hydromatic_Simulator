@@ -66,47 +66,10 @@ if "prediction_code" not in st.session_state:
 
 @st.cache_resource
 def load_models():
-    models = []
-
-    weights_path = os.path.join(
-        "Hydromatic_Simulator",
-        "model",
-        "weights",
+    return load_trained_model(
+        data_path="./Hydromatic_Simulator/dataset",
+        weights_path="./Hydromatic_Simulator/model/weights",
     )
-
-    # Dummy inputs for model initialization
-    dummy_design = tf.zeros((1, S), dtype=tf.float32)
-    dummy_position = tf.zeros((1, 1, 2), dtype=tf.float32)
-
-    dummy_encoder_input = tf.zeros((1, S), dtype=tf.float32)
-
-    for i in range(NUM_COORD):
-
-        model = GeneratorModel()
-
-        # Initialize model variables
-        _ = model.recursive_generate(
-            dummy_design,
-            dummy_position,
-            training=False,
-        )
-
-        encoder_file = os.path.join(
-            weights_path,
-            f"encoder_{NUM_COORD}coords_{i}.weights.h5",
-        )
-
-        decoder_file = os.path.join(
-            weights_path,
-            f"decoder_{NUM_COORD}coords_{i}.weights.h5",
-        )
-
-        model.encoder.load_weights(encoder_file)
-        model.decoder.load_weights(decoder_file)
-
-        models.append(model)
-
-    return models
 
 
 # ============================================================
